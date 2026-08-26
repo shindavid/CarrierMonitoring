@@ -16,9 +16,8 @@
   button:disabled { opacity:.45; }
   #zonesel label { margin-right:.6rem; }
   .grid { display:grid; gap:.6rem; padding:.6rem; }
-  #zones { height:calc(100vh - var(--hdr, 56px)); box-sizing:border-box; grid-auto-flow:column; grid-template-rows:repeat(2, minmax(0,1fr)); }
-  #system { grid-template-columns:repeat(3, minmax(0,1fr)); }
-  @media (max-width: 900px) { #zones { height:auto; grid-auto-flow:row; grid-template-columns:1fr !important; grid-template-rows:none; } #zones .chart { height:150px; } #system { grid-template-columns:1fr; } }
+  #zones { height:calc(100vh - var(--hdr, 56px)); box-sizing:border-box; grid-auto-flow:column; grid-template-rows:minmax(0,3fr) minmax(0,2fr); }
+  @media (max-width: 900px) { #zones { height:auto; grid-auto-flow:row; grid-template-columns:1fr !important; grid-template-rows:none; } #zones .chart { height:150px; } }
   .card { padding:.4rem .6rem .2rem; background:var(--card); border-radius:8px; min-width:0; min-height:0; display:flex; flex-direction:column; }
   .card .head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline; gap:.1rem .8rem; margin-bottom:.15rem; }
   .card h2 { font-size:.95rem; margin:0; white-space:nowrap; }
@@ -29,6 +28,7 @@
   .chart { flex:1; min-height:0; overflow:hidden; }
   #status { color:var(--muted); font-size:.85rem; }
   .u-select { background: rgba(120,120,120,.2); }
+  #tip { position:fixed; pointer-events:none; display:none; padding:.2rem .5rem; font-size:.8rem; background:var(--fg); color:var(--bg); border-radius:4px; z-index:5; }
 </style>
 </head>
 <body>
@@ -53,41 +53,45 @@
   <span id="status"></span>
 </header>
 <div id="zones" class="grid"></div>
-<div id="system" class="grid"></div>
+<div id="tip"></div>
 
 <script>
 const $ = s => document.querySelector(s);
 
 // ---------- series & band styling ----------
 const SERIES = {
-  rt:        {name:'Room temperature', color:'#e6503c', width:2},
+  rt:        {name:'Room temp',    color:'#e6503c', width:2},
   htsp:      {name:'Heat setpoint',    color:'#e08a2e', width:1.5, dash:[6,4]},
   clsp:      {name:'Cool setpoint',    color:'#2878e6', width:1.5, dash:[6,4]},
   damper:    {name:'Damper',      color:'#a05adc', width:2},
-  oat:       {name:'Outdoor temperature', color:'#e6503c', width:2},
-  odu_stage: {name:'AC stage (1–5)',   color:'#a05adc', width:2},
-  blwrpm:    {name:'Blower RPM',       color:'#2878e6', width:1.5},
-  cfm:       {name:'Airflow (CFM)',    color:'#3cb464', width:1.5},
-  statpress: {name:'Static pressure ×100 (in. w.c.)', color:'#e6a03c', width:1.5, dash:[6,4]},
+  oat:       {name:'Outdoor temp', color:'rgba(107,142,35,.55)', width:5},
 };
 const BANDS = {
-  zoneconditioning: [['active_heat','Heating','rgba(230,60,30,.32)'], ['prep_heat','Pre-heat','rgba(245,190,40,.35)'],
-                     ['active_cool','Cooling','rgba(40,90,230,.32)'], ['prep_cool','Pre-cool','rgba(40,205,225,.35)']],
+  zoneconditioning: [['active_heat','Heat','rgba(230,60,30,.32)'], ['prep_heat','Pre-heat','rgba(245,190,40,.35)'],
+                     ['active_cool','Cool','rgba(40,90,230,.32)'], ['prep_cool','Pre-cool','rgba(40,205,225,.35)']],
   fan:  [['off','Fan auto','rgba(120,120,120,.10)'], ['low','Fan low','rgba(60,190,90,.28)'], ['med','Fan medium','rgba(240,160,30,.32)'], ['high','Fan high','rgba(220,50,170,.30)']],
-  mode: [['heat','Heat mode','rgba(230,60,30,.14)'], ['cool','Cool mode','rgba(40,90,230,.14)'], ['auto','Auto mode','rgba(120,120,120,.14)'], ['fanonly','Fan only','rgba(60,180,90,.14)']],
-  opstat: [['on','Running','rgba(160,90,220,.22)']],
+  mode: [['heat','Heat mode','#e63c1e'], ['cool','Cool mode','#2860e6'], ['auto','Auto mode','#8c8c8c'], ['fanonly','Fan only','#3cb464']],
 };
 function bandColor(kind, v) {
   v = String(v);
-  if (kind === 'opstat') return v === 'off' ? null : 'rgba(160,90,220,.22)';
   const hit = BANDS[kind].find(b => b[0] === v);
   return hit ? hit[2] : null;
 }
 const marker = s => `<svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="${s.color}" stroke-width="${s.width}"${s.dash ? ` stroke-dasharray="${s.dash.join(',')}"` : ''}/></svg>`;
 
 // ---------- data helpers ----------
-const intervals = (rows, end) => rows.map((r, i) => [r.ts, i+1 < rows.length ? rows[i+1].ts : end, r.value_text ?? r.value_num]);
-const stageNum = v => v == null ? null : v === 'off' ? 0 : /^stage\s*(\d+)/i.test(v) ? +v.match(/(\d+)/)[1] : (isNaN(+v) ? null : +v);
+// Change-tracked rows -> [[t0, t1, value], ...], merging consecutive rows with the
+// same value (poll anchors repeat the current value) so a boundary always means a change.
+function intervals(rows, end) {
+  const out = [];
+  for (const r of rows) {
+    const v = r.value_text ?? r.value_num;
+    if (out.length && out[out.length-1][2] === v) continue;
+    if (out.length) out[out.length-1][1] = r.ts;
+    out.push([r.ts, end, v]);
+  }
+  return out;
+}
 const mapNum = (rows, f) => rows.map(r => ({ts:r.ts, value_num: r.value_num == null ? null : f(r.value_num)}));
 
 function alignStep(seriesMap, start, end) {
@@ -124,15 +128,40 @@ function drawBands(u, bands) {
     if (x1 > x0) { ctx.fillStyle = c; ctx.fillRect(x0, top, x1-x0, h); }
   }
 }
-const TICK = 10; // uPlot's default x-axis tick length (CSS px); the midnight line runs through it
 function drawMidnights(u) {
   const {min, max} = u.scales.x, ctx = u.ctx;
   const d = new Date(min*1000); d.setHours(24,0,0,0);
   ctx.save(); ctx.setLineDash([]); ctx.strokeStyle = 'rgba(128,128,128,.7)'; ctx.lineWidth = 2 * devicePixelRatio;
   for (; d.getTime()/1000 < max; d.setDate(d.getDate()+1)) {
     const x = u.valToPos(d.getTime()/1000, 'x', true);
-    ctx.beginPath(); ctx.moveTo(x, u.bbox.top); ctx.lineTo(x, u.bbox.top + u.bbox.height + TICK * devicePixelRatio); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, u.bbox.top); ctx.lineTo(x, u.bbox.top + u.bbox.height); ctx.stroke();
   }
+  ctx.restore();
+}
+
+// System mode ribbon: a strip below the x-axis labels ("Mode:" caption in the axis
+// gutter). Segments are labelled inline when wide enough; a dark divider marks each
+// change and extends up through the axis area to the plot so transitions line up.
+const RIBBON = 13, RIBBON_PAD = RIBBON + 4;   // CSS px reserved below the axis
+const MODE_LABEL = {heat:'Heat', cool:'Cool', auto:'Auto', fanonly:'Fan only', off:'Off'};
+function drawModeRibbon(u, ivals) {
+  const ctx = u.ctx, dpr = devicePixelRatio, L = u.bbox.left, R = L + u.bbox.width;
+  const top = (u.height - RIBBON - 2) * dpr, plotBottom = u.bbox.top + u.bbox.height;
+  ctx.save(); ctx.setLineDash([]);
+  ctx.font = `${11*dpr}px system-ui, sans-serif`; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#888'; ctx.textAlign = 'right'; ctx.fillText('Mode:', L - 4*dpr, top + RIBBON*dpr/2);
+  ctx.textAlign = 'left';
+  ivals.forEach(([t0, t1, v], i) => {
+    const c = bandColor('mode', v), x0 = Math.max(u.valToPos(t0,'x',true), L), x1 = Math.min(u.valToPos(t1,'x',true), R);
+    if (x1 <= x0) return;
+    if (c) { ctx.fillStyle = c; ctx.fillRect(x0, top, x1-x0, RIBBON*dpr); }
+    const label = MODE_LABEL[v] ?? String(v);
+    if (x1 - x0 > ctx.measureText(label).width + 8*dpr) { ctx.fillStyle = c ? '#fff' : '#888'; ctx.fillText(label, x0 + 4*dpr, top + RIBBON*dpr/2); }
+    if (i > 0 && t0 > u.scales.x.min) {          // a transition inside the window
+      ctx.strokeStyle = 'rgba(40,40,40,.85)'; ctx.lineWidth = 2*dpr;
+      ctx.beginPath(); ctx.moveTo(x0, plotBottom); ctx.lineTo(x0, top + RIBBON*dpr); ctx.stroke();
+    }
+  });
   ctx.restore();
 }
 
@@ -143,15 +172,20 @@ const isoDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate(
 function tickLabels(u, splits, axisIdx, foundSpace, foundIncr) {
   return splits.map(ts => {
     const d = new Date(ts*1000), midnight = d.getHours() === 0 && d.getMinutes() === 0;
-    return (foundIncr >= 86400 || midnight) ? isoDate(d) : `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return (foundIncr >= 86400 || midnight) ? isoDate(d) : `${d.getHours() % 12 || 12}:${pad(d.getMinutes())}${d.getHours() < 12 ? 'am' : 'pm'}`;
   });
 }
+
+// Fixed-range axes: label the end ticks as bounds, since values are clamped into the range
+const clampedTicks = ([lo, hi]) => (u, splits) => splits.map(v => v <= lo ? `\u2264${lo}` : v >= hi ? `\u2265${hi}` : v);
+const clampTo = ([lo, hi]) => rows => mapNum(rows, v => Math.min(hi, Math.max(lo, v)));
 
 function chart(parent, title, seriesMap, bands, opts) {
   const card = document.createElement('div'); card.className = 'card';
   const names = Object.keys(seriesMap);
   const key = names.map(n => `<span style="color:${SERIES[n].color}">${SERIES[n].name}${marker(SERIES[n])}</span>`).join('')
-    + bands.flatMap(b => BANDS[b.kind].map(([,label,c]) => `<span class="band" style="background:${c}">${label}</span>`)).join('');
+    + bands.flatMap(b => BANDS[b.kind].map(([,label,c]) => `<span class="band" style="background:${c}">${label}</span>`)).join('')
+;
   card.innerHTML = `<div class="head"><h2>${title}</h2><div class="key">${key}</div></div>`;
   const el = document.createElement('div'); el.className = 'chart'; card.appendChild(el);
   parent.appendChild(card);
@@ -161,13 +195,16 @@ function chart(parent, title, seriesMap, bands, opts) {
   const u = new uPlot({
     width: Math.max(260, card.clientWidth - 14), height,
     legend: {show:false},
+    padding: [6, 8, opts.ribbon ? RIBBON_PAD : 0, 0],
     series: [{}, ...names.map(n => ({stroke:SERIES[n].color, width:SERIES[n].width, dash:SERIES[n].dash,
                                      paths:uPlot.paths.stepped({align:1}), points:{show:false}, spanGaps:true}))],
-    axes: [{incrs:INCRS, space:70, values:tickLabels}, {label:opts.ylabel, labelSize:18, size:48}],
+    axes: [{incrs:INCRS, space:70, values:tickLabels, ticks:{show:false}, size:24, gap:4},
+           {label:opts.ylabel, labelSize:18, size:48, ticks:{show:false}, incrs:[1,2,5,10,20,25,50,100], values: opts.yrange ? clampedTicks(opts.yrange) : undefined}],
     scales: {x:{time:true}, y: opts.yrange ? {range: opts.yrange} : {}},
-    cursor: {sync:{key:'cm'}, drag:{x:true, y:false}},
+    cursor: {sync:{key:'cm'}, drag:{x:true, y:false}, y:false},
     hooks: {
       drawClear: [u => { drawBands(u, bands); drawMidnights(u); }],
+      draw: [u => { if (opts.ribbon) drawModeRibbon(u, opts.ribbon); }],
       setScale: [(u, k) => { if (k === 'x' && !syncing) applyScale(u.scales.x.min, u.scales.x.max, u); }],
     },
   }, alignStep(seriesMap, base.start, base.end), el);
@@ -179,6 +216,19 @@ function chart(parent, title, seriesMap, bands, opts) {
     if (nmax - nmin < 600) return;
     applyScale(nmin, nmax);
   }, {passive:false});
+  if (opts.ribbon) {   // hover tooltip for the mode ribbon (it sits outside uPlot's overlay)
+    const tip = $('#tip');
+    u.root.addEventListener('mousemove', e => {
+      const r = u.root.getBoundingClientRect(), y = e.clientY - r.top, x = e.clientX - r.left - u.bbox.left / devicePixelRatio;
+      const inRibbon = y >= u.height - RIBBON - 2 && y <= u.height - 2 && x >= 0 && x <= u.bbox.width / devicePixelRatio;
+      const t = inRibbon ? u.posToVal(x, 'x') : null;
+      const hit = t == null ? null : opts.ribbon.find(([t0, t1]) => t >= t0 && t < t1);
+      if (!hit) { tip.style.display = 'none'; return; }
+      tip.textContent = 'Mode: ' + (MODE_LABEL[hit[2]] ?? hit[2]);
+      tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 28) + 'px';
+    });
+    u.root.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  }
   if (zoom) u.setScale('x', zoom);
   charts.push({u, card, el, fill: !!opts.fill});
 }
@@ -205,22 +255,19 @@ let lastData = null;
 function render() {
   const d = lastData; if (!d) return;
   const end = d.end;
-  const zonesEl = $('#zones'), sys = $('#system'); zonesEl.innerHTML = ''; sys.innerHTML = ''; charts.length = 0;
+  const zonesEl = $('#zones'); zonesEl.innerHTML = ''; charts.length = 0;
   document.documentElement.style.setProperty('--hdr', $('header').offsetHeight + 'px');
   const shown = d.zones.filter(z => !hidden.has(z.entity));
   zonesEl.style.gridTemplateColumns = `repeat(${Math.max(1, shown.length)}, minmax(0,1fr))`;
+  const modeIv = intervals(d.system.state.mode, end), TEMP = [60, 80], clamp = clampTo(TEMP);
   for (const z of shown) {
-    chart(zonesEl, `${z.name} — temperature`, {rt:z.numeric.rt, htsp:z.numeric.htsp, clsp:z.numeric.clsp},
-      [{kind:'zoneconditioning', ivals:intervals(z.state.zoneconditioning, end)}], {fill:true, ylabel:'Fahrenheit'});
+    chart(zonesEl, `${z.name} — temperature`,
+      {rt:clamp(z.numeric.rt), htsp:clamp(z.numeric.htsp), clsp:clamp(z.numeric.clsp), oat:clamp(d.system.numeric.oat)},
+      [{kind:'zoneconditioning', ivals:intervals(z.state.zoneconditioning, end)}],
+      {fill:true, ylabel:'Fahrenheit', yrange:TEMP, ribbon:modeIv});
     chart(zonesEl, `${z.name} — damper & fan`, {damper:mapNum(z.numeric.damperposition, v => v/15*100)},
       [{kind:'fan', ivals:intervals(z.state.fan, end)}], {fill:true, ylabel:'Open %', yrange:[-4,104]});
   }
-  const modeIv = intervals(d.system.state.mode, end);
-  chart(sys, 'Outdoor temperature', {oat:d.system.numeric.oat}, [{kind:'mode', ivals:modeIv}], {height:170, ylabel:'Fahrenheit'});
-  chart(sys, 'Outdoor unit (AC)', {odu_stage:d.odu.opstat.map(r => ({ts:r.ts, value_num:r.value_num ?? stageNum(r.value_text)}))},
-    [{kind:'mode', ivals:modeIv}, {kind:'opstat', ivals:intervals(d.odu.opstat, end)}], {height:170, ylabel:'Stage', yrange:[0,5]});
-  chart(sys, 'Indoor unit (furnace blower)', {blwrpm:d.idu.blwrpm, cfm:d.idu.cfm, statpress:mapNum(d.idu.statpress, v => v*100)},
-    [{kind:'opstat', ivals:intervals(d.idu.opstat, end)}], {height:170, ylabel:'RPM / CFM'});
   $('#resetzoom').disabled = !zoom;
 }
 

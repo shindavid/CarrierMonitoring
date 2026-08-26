@@ -8,12 +8,33 @@ import logging
 import time
 
 from carrier_api import ApiConnectionGraphql, System, WebsocketDataUpdater
+from gql import gql
+from graphql import print_ast
 
 from .db import Store
 from .normalize import diff_rows, snapshot
 from .settings import Settings
 
 log = logging.getLogger(__name__)
+
+# Zone status fields carrier_api's polled query omits but Carrier's schema provides.
+# Without these, damper position only ever arrives via websocket pushes for zones
+# that changed, so an idle zone never reports one.
+EXTRA_ZONE_STATUS_FIELDS = ("damperposition", "occupancy", "otmr")
+
+
+class ApiConnection(ApiConnectionGraphql):
+    """carrier_api connection that asks for a few extra zone status fields."""
+
+    async def authed_query(self, operation_name, query, variable_values):
+        if operation_name == "getInfinitySystems":
+            document = getattr(query, "document", query)  # gql v4 GraphQLRequest vs v3 DocumentNode
+            text = print_ast(document)
+            marker = "zoneconditioning"
+            if marker in text and EXTRA_ZONE_STATUS_FIELDS[0] not in text:
+                text = text.replace(marker, marker + "\n" + "\n".join(EXTRA_ZONE_STATUS_FIELDS), 1)
+                query = gql(text)
+        return await super().authed_query(operation_name, query, variable_values)
 
 
 class CloudIngest:
@@ -71,7 +92,7 @@ class CloudIngest:
     # -- main loop -------------------------------------------------------
     async def run(self) -> None:
         # aiohttp's ClientSession must be created while the loop is running.
-        self.api = ApiConnectionGraphql(self.settings.username, self.settings.password)
+        self.api = ApiConnection(self.settings.username, self.settings.password)
         ws = None
         try:
             await self.full_load("cloud:load")
@@ -100,7 +121,7 @@ class CloudIngest:
 
 async def probe(settings: Settings) -> dict:
     """One-shot: log in, fetch systems, return a summary of what the account exposes."""
-    api = ApiConnectionGraphql(settings.username, settings.password)
+    api = ApiConnection(settings.username, settings.password)
     try:
         systems = await api.load_data()
         out = []
