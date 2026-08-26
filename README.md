@@ -25,6 +25,15 @@ tunnel in front of it (e.g. a Cloudflare Tunnel ingress rule
 `CARRIERMON_AUTH_PASSWORD` in `.env` to require HTTP Basic Auth on every request. Anything
 site-specific (tunnel configs, hostnames) can live in `deploy/local/`, which is gitignored.
 
+### Developing without touching production
+
+Make a second clone and run `./test_dev.sh` from it. The first run creates a `.venv` and a
+dev `.env` (`CARRIERMON_DEV=1`, pointing at the production database next door, no auth) and
+then serves http://localhost:8499 until Ctrl+C. Dev checkouts can only *read*: the web server
+opens the database read-only, and `carriermon ingest` refuses to run when `CARRIERMON_DEV=1`.
+Note the dashboard HTML is read from disk per request, so in the **production** checkout an
+edit to `carriermon/static/index.html` is live immediately; Python changes need `./restart.sh`.
+
 ### What gets stored (`data/carriermon.sqlite`)
 - `raw_messages` — every payload from Carrier, verbatim.
 - `readings` — every field of status + config, flattened, written when it **changes**

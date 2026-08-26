@@ -24,7 +24,7 @@ UNIT_FIELDS = ["opstat", "opmode", "cfm", "blwrpm", "statpress", "type"]
 
 
 def create_app(settings: Settings) -> FastAPI:
-    store = Store(settings.db_path)
+    store = Store(settings.db_path, read_only=True)
     app = FastAPI(title="carriermon")
 
     if settings.auth_user and settings.auth_password:

@@ -22,8 +22,9 @@ def load_dotenv(path: Path = Path(".env")) -> None:
 
 @dataclass(frozen=True)
 class Settings:
-    username: str
-    password: str
+    username: str | None
+    password: str | None
+    dev: bool
     db_path: Path
     poll_seconds: int
     web_host: str
@@ -31,18 +32,17 @@ class Settings:
     auth_user: str | None
     auth_password: str | None
 
+    def require_carrier_login(self) -> None:
+        if not self.username or not self.password:
+            raise SystemExit("CARRIER_USERNAME / CARRIER_PASSWORD not set (copy .env.example to .env)")
+
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv()
-        username = os.environ.get("CARRIER_USERNAME")
-        password = os.environ.get("CARRIER_PASSWORD")
-        if not username or not password:
-            raise SystemExit(
-                "CARRIER_USERNAME / CARRIER_PASSWORD not set (copy .env.example to .env)"
-            )
         return cls(
-            username=username,
-            password=password,
+            username=os.environ.get("CARRIER_USERNAME") or None,
+            password=os.environ.get("CARRIER_PASSWORD") or None,
+            dev=os.environ.get("CARRIERMON_DEV", "") == "1",
             db_path=Path(os.environ.get("CARRIERMON_DB", "data/carriermon.sqlite")),
             poll_seconds=int(os.environ.get("CARRIERMON_POLL_SECONDS", "300")),
             web_host=os.environ.get("CARRIERMON_HOST", "0.0.0.0"),

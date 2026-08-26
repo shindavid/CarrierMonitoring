@@ -43,11 +43,19 @@ CREATE INDEX IF NOT EXISTS readings_changed ON readings(changed, ts);
 
 
 class Store:
-    def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(path, check_same_thread=False)
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.executescript(SCHEMA)
+    def __init__(self, path: Path, read_only: bool = False) -> None:
+        """Open the database. ``read_only`` opens it with SQLite's ``mode=ro`` so the
+        connection cannot modify it at all (used by the web server, and what lets a
+        dev checkout browse the production database safely)."""
+        if read_only:
+            if not path.exists():
+                raise FileNotFoundError(f"database not found: {path}")
+            self.conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(path, check_same_thread=False)
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.executescript(SCHEMA)
         self.conn.row_factory = sqlite3.Row
 
     # -- raw -------------------------------------------------------------

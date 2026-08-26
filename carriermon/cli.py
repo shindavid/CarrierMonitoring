@@ -27,6 +27,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     settings = Settings.from_env()
 
+    if args.cmd == "ingest" and settings.dev:
+        raise SystemExit("refusing to run ingest: this checkout is marked CARRIERMON_DEV=1 (dev checkouts only read)")
+    if args.cmd in ("probe", "ingest"):
+        settings.require_carrier_login()
+
     if args.cmd == "probe":
         from .cloud import probe
         print(json.dumps(asyncio.run(probe(settings)), indent=2, default=str))
