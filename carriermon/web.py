@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import HTMLResponse, Response
 
 from .db import Store
 from .settings import Settings
@@ -52,8 +52,12 @@ def create_app(settings: Settings) -> FastAPI:
         return start, end
 
     @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(STATIC / "index.html")
+    def index() -> Response:
+        html = (STATIC / "index.html").read_text()
+        if settings.dev:
+            # Marks the page as the dev dashboard: amber chrome, "DEV" badge, tab title/favicon.
+            html = html.replace('<html lang="en">', '<html lang="en" data-env="dev">', 1)
+        return HTMLResponse(html)
 
     @app.get("/api/systems")
     def systems() -> list[dict]:

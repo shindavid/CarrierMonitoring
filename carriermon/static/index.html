@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Carrier Monitor</title>
+<link id="favicon" rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%232878e6'/></svg>">
 <link rel="stylesheet" href="https://unpkg.com/uplot@1.6.31/dist/uPlot.min.css">
 <script src="https://unpkg.com/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <style>
@@ -29,10 +30,21 @@
   #status { color:var(--muted); font-size:.85rem; }
   .u-select { background: rgba(120,120,120,.2); }
   #tip { position:fixed; pointer-events:none; display:none; padding:.2rem .5rem; font-size:.8rem; background:var(--fg); color:var(--bg); border-radius:4px; z-index:5; }
+
+  /* Dev checkout (CARRIERMON_DEV=1): amber everything, so this is never mistaken for prod. */
+  #devbadge { display:none; }
+  :root[data-env="dev"] { --dev:#d97706; }
+  @media (prefers-color-scheme: dark) { :root[data-env="dev"] { --dev:#f59e0b; } }
+  [data-env="dev"] header { background:color-mix(in srgb, var(--dev) 14%, var(--bg)); border-bottom:3px solid var(--dev); }
+  [data-env="dev"] #devbadge { display:inline-block; padding:.1rem .45rem; border-radius:4px; background:var(--dev); color:#fff;
+                               font-weight:700; font-size:.8rem; letter-spacing:.08em; }
+  [data-env="dev"] header h1 { color:var(--dev); }
+  [data-env="dev"] body::after { content:""; position:fixed; inset:0; border:3px solid var(--dev); pointer-events:none; z-index:10; }
 </style>
 </head>
 <body>
 <header>
+  <span id="devbadge" title="Dev checkout: read-only view of the production database">DEV</span>
   <h1>Carrier Monitor</h1>
   <label>System <select id="serial"></select></label>
   <label>Range
@@ -57,6 +69,12 @@
 
 <script>
 const $ = s => document.querySelector(s);
+
+// Dev checkout: mark the tab too, so a background dev tab is identifiable.
+if (document.documentElement.dataset.env === 'dev') {
+  document.title = 'DEV \u2014 ' + document.title;
+  $('#favicon').href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%23d97706'/><text x='16' y='22' font-size='18' font-family='sans-serif' font-weight='bold' fill='%23fff' text-anchor='middle'>D</text></svg>";
+}
 
 // ---------- series & band styling ----------
 const SERIES = {
