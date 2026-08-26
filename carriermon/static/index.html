@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carrier Monitor</title>
+<link rel="stylesheet" href="https://unpkg.com/uplot@1.6.31/dist/uPlot.min.css">
+<script src="https://unpkg.com/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
+<style>
+  :root { color-scheme: light dark; --fg:#222; --bg:#fff; --muted:#777; --card:#f6f6f8; --line:#ddd; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e6e6e6; --bg:#141518; --muted:#999; --card:#1e2024; --line:#333; } }
+  body { margin:0; font:14px/1.4 system-ui, sans-serif; color:var(--fg); background:var(--bg); }
+  header { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; padding:.5rem 1rem; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
+  header h1 { font-size:1.1rem; margin:0 .5rem 0 0; }
+  select, button, input { font:inherit; padding:.25rem .45rem; }
+  button:disabled { opacity:.45; }
+  #zonesel label { margin-right:.6rem; }
+  .grid { display:grid; gap:.6rem; padding:.6rem; }
+  #zones { height:calc(100vh - var(--hdr, 56px)); box-sizing:border-box; grid-auto-flow:column; grid-template-rows:repeat(2, minmax(0,1fr)); }
+  #system { grid-template-columns:repeat(3, minmax(0,1fr)); }
+  @media (max-width: 900px) { #zones { height:auto; grid-auto-flow:row; grid-template-columns:1fr !important; grid-template-rows:none; } #zones .chart { height:150px; } #system { grid-template-columns:1fr; } }
+  .card { padding:.4rem .6rem .2rem; background:var(--card); border-radius:8px; min-width:0; min-height:0; display:flex; flex-direction:column; }
+  .card .head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline; gap:.1rem .8rem; margin-bottom:.15rem; }
+  .card h2 { font-size:.95rem; margin:0; white-space:nowrap; }
+  .key { font-size:.75rem; color:var(--muted); display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.1rem .7rem; }
+  .key span { white-space:nowrap; }
+  .key svg { vertical-align:middle; margin-left:.2rem; }
+  .key .band { padding:0 .35rem; border-radius:3px; color:var(--fg); }
+  .chart { flex:1; min-height:0; overflow:hidden; }
+  #status { color:var(--muted); font-size:.85rem; }
+  .u-select { background: rgba(120,120,120,.2); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Carrier Monitor</h1>
+  <label>System <select id="serial"></select></label>
+  <label>Range
+    <select id="range">
+      <option value="3600">1 h</option>
+      <option value="21600" selected>6 h</option>
+      <option value="86400">24 h</option>
+      <option value="259200">3 d</option>
+      <option value="604800">7 d</option>
+      <option value="2592000">30 d</option>
+    </select>
+  </label>
+  <label>End (blank = now) <input id="end" type="datetime-local"></label>
+  <button id="resetzoom" disabled>Reset zoom</button>
+  <button id="reload">Reload</button>
+  <label><input id="auto" type="checkbox" checked> auto-refresh (60 s)</label>
+  <span id="zonesel"></span>
+  <span id="status"></span>
+</header>
+<div id="zones" class="grid"></div>
+<div id="system" class="grid"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+
+// ---------- series & band styling ----------
+const SERIES = {
+  rt:        {name:'Room temperature', color:'#e6503c', width:2},
+  htsp:      {name:'Heat setpoint',    color:'#e08a2e', width:1.5, dash:[6,4]},
+  clsp:      {name:'Cool setpoint',    color:'#2878e6', width:1.5, dash:[6,4]},
+  damper:    {name:'Damper',      color:'#a05adc', width:2},
+  oat:       {name:'Outdoor temperature', color:'#e6503c', width:2},
+  odu_stage: {name:'AC stage (1–5)',   color:'#a05adc', width:2},
+  blwrpm:    {name:'Blower RPM',       color:'#2878e6', width:1.5},
+  cfm:       {name:'Airflow (CFM)',    color:'#3cb464', width:1.5},
+  statpress: {name:'Static pressure ×100 (in. w.c.)', color:'#e6a03c', width:1.5, dash:[6,4]},
+};
+const BANDS = {
+  zoneconditioning: [['active_heat','Heating','rgba(230,60,30,.32)'], ['prep_heat','Pre-heat','rgba(245,190,40,.35)'],
+                     ['active_cool','Cooling','rgba(40,90,230,.32)'], ['prep_cool','Pre-cool','rgba(40,205,225,.35)']],
+  fan:  [['off','Fan auto','rgba(120,120,120,.10)'], ['low','Fan low','rgba(60,190,90,.28)'], ['med','Fan medium','rgba(240,160,30,.32)'], ['high','Fan high','rgba(220,50,170,.30)']],
+  mode: [['heat','Heat mode','rgba(230,60,30,.14)'], ['cool','Cool mode','rgba(40,90,230,.14)'], ['auto','Auto mode','rgba(120,120,120,.14)'], ['fanonly','Fan only','rgba(60,180,90,.14)']],
+  opstat: [['on','Running','rgba(160,90,220,.22)']],
+};
+function bandColor(kind, v) {
+  v = String(v);
+  if (kind === 'opstat') return v === 'off' ? null : 'rgba(160,90,220,.22)';
+  const hit = BANDS[kind].find(b => b[0] === v);
+  return hit ? hit[2] : null;
+}
+const marker = s => `<svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="${s.color}" stroke-width="${s.width}"${s.dash ? ` stroke-dasharray="${s.dash.join(',')}"` : ''}/></svg>`;
+
+// ---------- data helpers ----------
+const intervals = (rows, end) => rows.map((r, i) => [r.ts, i+1 < rows.length ? rows[i+1].ts : end, r.value_text ?? r.value_num]);
+const stageNum = v => v == null ? null : v === 'off' ? 0 : /^stage\s*(\d+)/i.test(v) ? +v.match(/(\d+)/)[1] : (isNaN(+v) ? null : +v);
+const mapNum = (rows, f) => rows.map(r => ({ts:r.ts, value_num: r.value_num == null ? null : f(r.value_num)}));
+
+function alignStep(seriesMap, start, end) {
+  const ts = new Set([start, end]);
+  for (const rows of Object.values(seriesMap)) for (const r of rows) if (r.ts >= start && r.ts <= end) ts.add(r.ts);
+  const xs = [...ts].sort((a,b) => a-b), data = [xs];
+  for (const rows of Object.values(seriesMap)) {
+    let i = 0, cur = null; const ys = [];
+    for (const x of xs) { while (i < rows.length && rows[i].ts <= x) { cur = rows[i].value_num; i++; } ys.push(cur); }
+    data.push(ys);
+  }
+  return data;
+}
+
+// ---------- zoom state (shared by all charts) ----------
+let base = {start:0, end:0}, zoom = null, syncing = false;
+const charts = [];
+function applyScale(min, max, except) {
+  syncing = true;
+  for (const {u} of charts) if (u !== except) u.setScale('x', {min, max});
+  syncing = false;
+  const isZoom = Math.abs(min - base.start) > 1 || Math.abs(max - base.end) > 1;
+  zoom = isZoom ? {min, max} : null;
+  $('#resetzoom').disabled = !isZoom;
+}
+$('#resetzoom').onclick = () => applyScale(base.start, base.end);
+
+// ---------- drawing hooks ----------
+function drawBands(u, bands) {
+  const ctx = u.ctx, top = u.bbox.top, h = u.bbox.height, L = u.bbox.left, R = L + u.bbox.width;
+  for (const {kind, ivals} of bands) for (const [t0,t1,v] of ivals) {
+    const c = bandColor(kind, v); if (!c) continue;
+    const x0 = Math.max(u.valToPos(t0,'x',true), L), x1 = Math.min(u.valToPos(t1,'x',true), R);
+    if (x1 > x0) { ctx.fillStyle = c; ctx.fillRect(x0, top, x1-x0, h); }
+  }
+}
+const TICK = 10; // uPlot's default x-axis tick length (CSS px); the midnight line runs through it
+function drawMidnights(u) {
+  const {min, max} = u.scales.x, ctx = u.ctx;
+  const d = new Date(min*1000); d.setHours(24,0,0,0);
+  ctx.save(); ctx.setLineDash([]); ctx.strokeStyle = 'rgba(128,128,128,.7)'; ctx.lineWidth = 2 * devicePixelRatio;
+  for (; d.getTime()/1000 < max; d.setDate(d.getDate()+1)) {
+    const x = u.valToPos(d.getTime()/1000, 'x', true);
+    ctx.beginPath(); ctx.moveTo(x, u.bbox.top); ctx.lineTo(x, u.bbox.top + u.bbox.height + TICK * devicePixelRatio); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// x-axis ticks: 5/15/30 min when zoomed in, else whole hours; never half-hours at wide ranges
+const H = 3600, INCRS = [300, 900, 1800, H, 2*H, 3*H, 6*H, 12*H, 24*H, 2*24*H, 7*24*H];
+const pad = n => String(n).padStart(2, '0');
+const isoDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+function tickLabels(u, splits, axisIdx, foundSpace, foundIncr) {
+  return splits.map(ts => {
+    const d = new Date(ts*1000), midnight = d.getHours() === 0 && d.getMinutes() === 0;
+    return (foundIncr >= 86400 || midnight) ? isoDate(d) : `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  });
+}
+
+function chart(parent, title, seriesMap, bands, opts) {
+  const card = document.createElement('div'); card.className = 'card';
+  const names = Object.keys(seriesMap);
+  const key = names.map(n => `<span style="color:${SERIES[n].color}">${SERIES[n].name}${marker(SERIES[n])}</span>`).join('')
+    + bands.flatMap(b => BANDS[b.kind].map(([,label,c]) => `<span class="band" style="background:${c}">${label}</span>`)).join('');
+  card.innerHTML = `<div class="head"><h2>${title}</h2><div class="key">${key}</div></div>`;
+  const el = document.createElement('div'); el.className = 'chart'; card.appendChild(el);
+  parent.appendChild(card);
+  const height = opts.fill ? Math.max(80, el.clientHeight) : opts.height;
+  if (!opts.fill) el.style.height = height + 'px';
+
+  const u = new uPlot({
+    width: Math.max(260, card.clientWidth - 14), height,
+    legend: {show:false},
+    series: [{}, ...names.map(n => ({stroke:SERIES[n].color, width:SERIES[n].width, dash:SERIES[n].dash,
+                                     paths:uPlot.paths.stepped({align:1}), points:{show:false}, spanGaps:true}))],
+    axes: [{incrs:INCRS, space:70, values:tickLabels}, {label:opts.ylabel, labelSize:18, size:48}],
+    scales: {x:{time:true}, y: opts.yrange ? {range: opts.yrange} : {}},
+    cursor: {sync:{key:'cm'}, drag:{x:true, y:false}},
+    hooks: {
+      drawClear: [u => { drawBands(u, bands); drawMidnights(u); }],
+      setScale: [(u, k) => { if (k === 'x' && !syncing) applyScale(u.scales.x.min, u.scales.x.max, u); }],
+    },
+  }, alignStep(seriesMap, base.start, base.end), el);
+
+  u.over.addEventListener('wheel', e => {   // wheel zoom around the cursor
+    e.preventDefault();
+    const {min, max} = u.scales.x, at = u.posToVal(e.offsetX, 'x'), f = e.deltaY < 0 ? 0.8 : 1.25;
+    let nmin = Math.max(at - (at - min) * f, base.start), nmax = Math.min(at + (max - at) * f, base.end);
+    if (nmax - nmin < 600) return;
+    applyScale(nmin, nmax);
+  }, {passive:false});
+  if (zoom) u.setScale('x', zoom);
+  charts.push({u, card, el, fill: !!opts.fill});
+}
+window.addEventListener('resize', () => charts.forEach(({u,card,el,fill}) =>
+  u.setSize({width:Math.max(260, card.clientWidth-14), height: fill ? Math.max(80, el.clientHeight) : u.height})));
+
+// ---------- zone selection ----------
+let hidden = new Set();
+try { hidden = new Set(JSON.parse(localStorage.getItem('cm.hiddenZones') || '[]')); } catch {}
+function buildZoneSelector(zones) {
+  const box = $('#zonesel'); box.innerHTML = 'Zones: ';
+  for (const z of zones) {
+    const l = document.createElement('label');
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !hidden.has(z.entity);
+    cb.onchange = () => { cb.checked ? hidden.delete(z.entity) : hidden.add(z.entity);
+      try { localStorage.setItem('cm.hiddenZones', JSON.stringify([...hidden])); } catch {}
+      render(); };
+    l.append(cb, ' ' + z.name); box.appendChild(l);
+  }
+}
+
+// ---------- page ----------
+let lastData = null;
+function render() {
+  const d = lastData; if (!d) return;
+  const end = d.end;
+  const zonesEl = $('#zones'), sys = $('#system'); zonesEl.innerHTML = ''; sys.innerHTML = ''; charts.length = 0;
+  document.documentElement.style.setProperty('--hdr', $('header').offsetHeight + 'px');
+  const shown = d.zones.filter(z => !hidden.has(z.entity));
+  zonesEl.style.gridTemplateColumns = `repeat(${Math.max(1, shown.length)}, minmax(0,1fr))`;
+  for (const z of shown) {
+    chart(zonesEl, `${z.name} — temperature`, {rt:z.numeric.rt, htsp:z.numeric.htsp, clsp:z.numeric.clsp},
+      [{kind:'zoneconditioning', ivals:intervals(z.state.zoneconditioning, end)}], {fill:true, ylabel:'Fahrenheit'});
+    chart(zonesEl, `${z.name} — damper & fan`, {damper:mapNum(z.numeric.damperposition, v => v/15*100)},
+      [{kind:'fan', ivals:intervals(z.state.fan, end)}], {fill:true, ylabel:'Open %', yrange:[-4,104]});
+  }
+  const modeIv = intervals(d.system.state.mode, end);
+  chart(sys, 'Outdoor temperature', {oat:d.system.numeric.oat}, [{kind:'mode', ivals:modeIv}], {height:170, ylabel:'Fahrenheit'});
+  chart(sys, 'Outdoor unit (AC)', {odu_stage:d.odu.opstat.map(r => ({ts:r.ts, value_num:r.value_num ?? stageNum(r.value_text)}))},
+    [{kind:'mode', ivals:modeIv}, {kind:'opstat', ivals:intervals(d.odu.opstat, end)}], {height:170, ylabel:'Stage', yrange:[0,5]});
+  chart(sys, 'Indoor unit (furnace blower)', {blwrpm:d.idu.blwrpm, cfm:d.idu.cfm, statpress:mapNum(d.idu.statpress, v => v*100)},
+    [{kind:'opstat', ivals:intervals(d.idu.opstat, end)}], {height:170, ylabel:'RPM / CFM'});
+  $('#resetzoom').disabled = !zoom;
+}
+
+async function load() {
+  const serial = $('#serial').value; if (!serial) return;
+  const end = $('#end').value ? new Date($('#end').value).getTime()/1000 : Date.now()/1000;
+  const start = end - +$('#range').value;
+  if (zoom && (zoom.min < start || zoom.max > end)) zoom = null;   // keep zoom if it still fits
+  base = {start, end};
+  $('#status').textContent = 'loading…';
+  lastData = await (await fetch(`/api/dashboard?serial=${encodeURIComponent(serial)}&start=${start}&end=${end}`)).json();
+  if (!$('#zonesel').children.length) buildZoneSelector(lastData.zones);
+  render();
+  $('#status').textContent = `updated ${new Date().toLocaleTimeString()}`;
+}
+
+async function init() {
+  const qs = new URLSearchParams(location.search);   // ?range=<seconds> preselects the range
+  if (qs.get('range') && [...$('#range').options].some(o => o.value === qs.get('range'))) $('#range').value = qs.get('range');
+  const systems = await (await fetch('/api/systems')).json();
+  const sel = $('#serial'); sel.innerHTML = '';
+  for (const s of systems) { const o = document.createElement('option'); o.value = s.serial; o.textContent = s.serial; sel.appendChild(o); }
+  if (!systems.length) { $('#status').textContent = 'No data yet — run `carriermon ingest`.'; return; }
+  sel.onchange = load; $('#range').onchange = () => { zoom = null; load(); }; $('#end').onchange = () => { zoom = null; load(); };
+  $('#reload').onclick = load;
+  setInterval(() => { if ($('#auto').checked && !document.hidden) load(); }, 60000);
+  load();
+}
+init();
+</script>
+</body>
+</html>
