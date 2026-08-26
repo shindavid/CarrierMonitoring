@@ -13,7 +13,17 @@ cp .env.example .env   # fill in your Carrier account credentials
 .venv/bin/carriermon web            # dashboard at http://localhost:8471 (port from CARRIERMON_PORT in .env)
 ```
 
-Run `ingest` and `web` as two long-lived processes (e.g. two systemd units, or `tmux`).
+### Running as services / hosting
+
+`deploy/install.sh` installs `carriermon-ingest` and `carriermon-web` as `systemctl --user`
+units (paths derived from the checkout) and starts them; `./restart.sh` restarts both after
+pulling changes.
+
+To expose the dashboard, keep `CARRIERMON_HOST=127.0.0.1` and put a TLS-terminating proxy or
+tunnel in front of it (e.g. a Cloudflare Tunnel ingress rule
+`hostname: <your host> → service: http://127.0.0.1:8471`). Set `CARRIERMON_AUTH_USER` /
+`CARRIERMON_AUTH_PASSWORD` in `.env` to require HTTP Basic Auth on every request. Anything
+site-specific (tunnel configs, hostnames) can live in `deploy/local/`, which is gitignored.
 
 ### What gets stored (`data/carriermon.sqlite`)
 - `raw_messages` — every payload from Carrier, verbatim.

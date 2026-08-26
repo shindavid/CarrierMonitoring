@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import secrets
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response
 
 from .db import Store
 from .settings import Settings
@@ -24,6 +26,25 @@ UNIT_FIELDS = ["opstat", "opmode", "cfm", "blwrpm", "statpress", "type"]
 def create_app(settings: Settings) -> FastAPI:
     store = Store(settings.db_path)
     app = FastAPI(title="carriermon")
+
+    if settings.auth_user and settings.auth_password:
+        expected = (settings.auth_user, settings.auth_password)
+
+        @app.middleware("http")
+        async def basic_auth(request: Request, call_next):
+            """HTTP Basic Auth on every route. TLS is terminated by the Cloudflare tunnel."""
+            header = request.headers.get("authorization", "")
+            ok = False
+            if header.startswith("Basic "):
+                try:
+                    user, _, password = base64.b64decode(header[6:]).decode().partition(":")
+                    ok = secrets.compare_digest(user, expected[0]) and secrets.compare_digest(password, expected[1])
+                except (ValueError, UnicodeDecodeError):
+                    ok = False
+            if not ok:
+                return Response("Authentication required", status_code=401,
+                                headers={"WWW-Authenticate": 'Basic realm="Carrier Monitor", charset="UTF-8"'})
+            return await call_next(request)
 
     def _range(start: float | None, end: float | None) -> tuple[float, float]:
         end = end or time.time()
