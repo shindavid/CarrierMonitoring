@@ -311,7 +311,14 @@ async function init() {
   if (!systems.length) { $('#status').textContent = 'No data yet — run `carriermon ingest`.'; return; }
   sel.onchange = load; $('#range').onchange = () => { zoom = null; load(); }; $('#end').onchange = () => { zoom = null; load(); };
   $('#reload').onclick = load;
-  setInterval(() => { if ($('#auto').checked && !document.hidden) load(); }, 60000);
+  let lastLoad = 0;
+  const maybeLoad = () => { if ($('#auto').checked && !document.hidden) { lastLoad = Date.now(); load(); } };
+  setInterval(maybeLoad, 60000);
+  // Refresh as soon as the tab becomes visible again if a tick was likely missed while hidden.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && $('#auto').checked && Date.now() - lastLoad >= 60000) maybeLoad();
+  });
+  lastLoad = Date.now();
   load();
 }
 init();
