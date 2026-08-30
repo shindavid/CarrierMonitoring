@@ -61,7 +61,9 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/api/systems")
     def systems() -> list[dict]:
-        return [{"serial": s, "zones": store.zones(s)} for s in store.serials()]
+        # Only the serials are used (to populate the picker); zones come from
+        # /api/dashboard. Computing zones here doubled every page load's cost.
+        return [{"serial": s} for s in store.serials()]
 
     @app.get("/api/fields")
     def fields() -> list[dict]:

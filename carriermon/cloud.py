@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from typing import Any
 
 from carrier_api import ApiConnectionGraphql, System, WebsocketDataUpdater
 from gql import gql
@@ -44,6 +45,7 @@ class CloudIngest:
         self.api: ApiConnectionGraphql | None = None  # created inside the event loop
         self.systems: list[System] = []
         self.last: dict[str, dict] = {}
+        self.last_config_raw: dict[str, Any] = {}  # per-serial, to log config verbatim only on change
         self.updater: WebsocketDataUpdater | None = None
 
     # -- recording -------------------------------------------------------
@@ -60,12 +62,19 @@ class CloudIngest:
         assert self.api is not None
         self.systems = await self.api.load_data()
         for system in self.systems:
-            self.store.add_raw(source, system.profile.serial, {
+            serial = system.profile.serial
+            raw: dict[str, Any] = {
                 "profile": system.profile.raw,
                 "status": system.status.raw,
-                "config": system.config.raw,
                 "energy": system.energy.raw,
-            })
+            }
+            # The ~34 KB config blob is near-static; logging it verbatim every poll was
+            # ~89% of raw_messages. Keep it in the raw log only when it actually changes
+            # (the last config-bearing raw before any timestamp reconstructs config then).
+            if system.config.raw != self.last_config_raw.get(serial):
+                raw["config"] = system.config.raw
+                self.last_config_raw[serial] = system.config.raw
+            self.store.add_raw(source, serial, raw)
             self.record_system(system, source, force_all=True)
         if self.updater is not None:
             self.updater.systems = self.systems

@@ -92,7 +92,10 @@ def diff_rows(
         num, text = _coerce(raw)
         stored = num if num is not None else text
         changed = (entity, field) not in last or last[(entity, field)] != stored
-        if changed or force_all:
+        # Config (the near-static weekly schedule/program) is recorded change-only:
+        # forced poll anchors on it added ~90% of all rows for no charted benefit.
+        # Live telemetry still gets an anchor every poll so series have sample points.
+        if changed or (force_all and not entity.startswith("config")):
             rows.append((ts, serial, entity, field, num, text, int(changed), source))
         if changed:
             changed_count += 1
