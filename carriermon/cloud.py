@@ -103,6 +103,7 @@ class CloudIngest:
             ws.callback_add(self.on_ws_message)
             await ws.create_task_listener()
             log.info("websocket listener started; polling every %ss", self.settings.poll_seconds)
+            last_prune = 0.0
             while True:
                 await asyncio.sleep(self.settings.poll_seconds)
                 started = time.time()
@@ -111,6 +112,16 @@ class CloudIngest:
                     log.debug("poll ok in %.1fs", time.time() - started)
                 except Exception:  # noqa: BLE001
                     log.exception("poll failed; will retry next interval")
+                # Enforce the retention window at most once a day (0 = keep forever).
+                if self.settings.retention_days and time.time() - last_prune > 86400:
+                    last_prune = time.time()
+                    try:
+                        deleted = self.store.prune(self.settings.retention_days)
+                        if deleted:
+                            log.info("pruned %d rows older than %d days",
+                                     deleted, self.settings.retention_days)
+                    except Exception:  # noqa: BLE001
+                        log.exception("retention prune failed; will retry tomorrow")
         finally:
             if ws is not None:
                 ws.running = False

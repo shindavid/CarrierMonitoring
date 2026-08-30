@@ -27,6 +27,7 @@ class Settings:
     dev: bool
     db_path: Path
     poll_seconds: int
+    retention_days: int
     web_host: str
     web_port: int
     auth_user: str | None
@@ -45,6 +46,7 @@ class Settings:
             dev=os.environ.get("CARRIERMON_DEV", "") == "1",
             db_path=Path(os.environ.get("CARRIERMON_DB", "data/carriermon.sqlite")),
             poll_seconds=int(os.environ.get("CARRIERMON_POLL_SECONDS", "300")),
+            retention_days=int(os.environ.get("CARRIERMON_RETENTION_DAYS", "7")),
             web_host=os.environ.get("CARRIERMON_HOST", "0.0.0.0"),
             web_port=int(os.environ.get("CARRIERMON_PORT", "8471")),
             auth_user=os.environ.get("CARRIERMON_AUTH_USER") or None,

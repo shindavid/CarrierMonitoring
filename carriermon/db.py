@@ -55,6 +55,9 @@ class Store:
             path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(path, check_same_thread=False)
             self.conn.execute("PRAGMA journal_mode=WAL")
+            # Wait rather than fail instantly if the read-only web connection holds a
+            # lock (matters for VACUUM during prune()).
+            self.conn.execute("PRAGMA busy_timeout=5000")
             self.conn.executescript(SCHEMA)
         self.conn.row_factory = sqlite3.Row
 
@@ -93,6 +96,23 @@ class Store:
                 rows,
             )
         return len(rows)
+
+    # -- retention -------------------------------------------------------
+    def prune(self, retention_days: float, vacuum: bool = True) -> int:
+        """Delete rows older than the retention window from both tables and return
+        how many were removed. Deleting alone only frees pages for reuse (the file
+        does not shrink); ``vacuum`` rewrites the database to actually give the space
+        back to the filesystem."""
+        cutoff = time.time() - retention_days * 86400
+        with self.conn:
+            deleted = self.conn.execute("DELETE FROM raw_messages WHERE ts < ?", (cutoff,)).rowcount
+            deleted += self.conn.execute("DELETE FROM readings WHERE ts < ?", (cutoff,)).rowcount
+        if vacuum and deleted:
+            self.conn.execute("VACUUM")  # must run outside a transaction (the block above committed)
+            # In WAL mode VACUUM's rewrite lands in the -wal file; checkpoint it back
+            # so the space is actually returned to the filesystem.
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return deleted
 
     # -- queries for the web UI -----------------------------------------
     def fields(self) -> list[dict]:
