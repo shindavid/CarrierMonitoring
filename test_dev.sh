@@ -34,7 +34,7 @@ ENV
   echo "created dev .env (db: $DB)"
 fi
 
-[ -x .venv/bin/carriermon ] || { echo "creating .venv…"; python3 -m venv .venv && .venv/bin/pip install -q -e .; }
+[ -x .venv/bin/carriermon ] || { echo "creating .venv…"; python3.14 -m venv .venv && .venv/bin/pip install -q -e .; }
 PORT=$(grep '^CARRIERMON_PORT=' .env | cut -d= -f2- || true)
 echo "dev dashboard: http://localhost:${PORT:-$PORT_DEFAULT}/   (Ctrl+C to stop)"
 exec .venv/bin/carriermon web
