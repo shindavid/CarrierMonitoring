@@ -186,6 +186,9 @@ function drawModeRibbon(u, ivals) {
 const H = 3600, INCRS = [300, 900, 1800, H, 2*H, 3*H, 6*H, 12*H, 24*H, 2*24*H, 7*24*H];
 const pad = n => String(n).padStart(2, '0');
 const isoDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+// Full date + time for the hover tooltip (the window can span up to 7 days).
+const fmtTip = t => { const d = new Date(t*1000);
+  return `${isoDate(d)} ${d.getHours() % 12 || 12}:${pad(d.getMinutes())}${d.getHours() < 12 ? 'am' : 'pm'}`; };
 function tickLabels(u, splits, axisIdx, foundSpace, foundIncr) {
   return splits.map(ts => {
     const d = new Date(ts*1000), midnight = d.getHours() === 0 && d.getMinutes() === 0;
@@ -233,15 +236,21 @@ function chart(parent, title, seriesMap, bands, opts) {
     if (nmax - nmin < 600) return;
     applyScale(nmin, nmax);
   }, {passive:false});
-  if (opts.ribbon) {   // hover tooltip for the mode ribbon (it sits outside uPlot's overlay)
+  {   // hover tooltip: the time under the cursor, plus the mode band on charts that have one
     const tip = $('#tip');
     u.root.addEventListener('mousemove', e => {
       const r = u.root.getBoundingClientRect(), y = e.clientY - r.top, x = e.clientX - r.left - u.bbox.left / devicePixelRatio;
-      const inRibbon = y >= u.height - RIBBON - 2 && y <= u.height - 2 && x >= 0 && x <= u.bbox.width / devicePixelRatio;
-      const t = inRibbon ? u.posToVal(x, 'x') : null;
-      const hit = t == null ? null : opts.ribbon.find(([t0, t1]) => t >= t0 && t < t1);
-      if (!hit) { tip.style.display = 'none'; return; }
-      tip.textContent = 'Mode: ' + (MODE_LABEL[hit[2]] ?? hit[2]);
+      const plotW = u.bbox.width / devicePixelRatio;
+      const plotTop = u.bbox.top / devicePixelRatio, plotBot = plotTop + u.bbox.height / devicePixelRatio;
+      const inRibbon = !!opts.ribbon && y >= u.height - RIBBON - 2 && y <= u.height - 2;
+      if (x < 0 || x > plotW || (!inRibbon && (y < plotTop || y > plotBot))) { tip.style.display = 'none'; return; }
+      const t = u.posToVal(x, 'x');
+      let html = fmtTip(t);
+      if (inRibbon) {
+        const hit = opts.ribbon.find(([t0, t1]) => t >= t0 && t < t1);
+        if (hit) html += '<br>Mode: ' + (MODE_LABEL[hit[2]] ?? hit[2]);
+      }
+      tip.innerHTML = html;
       tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY - 28) + 'px';
     });
     u.root.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
