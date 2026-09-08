@@ -55,8 +55,11 @@
       <option value="86400">24 h</option>
       <option value="259200">3 d</option>
       <option value="604800">7 d</option>
+      <option value="custom">Custom…</option>
     </select>
   </label>
+  <label id="customwrap" hidden>Length <input id="customdur" type="number" min="1" step="1" style="width:4em">
+    <select id="customunit"><option value="60">min</option><option value="3600" selected>hours</option><option value="86400">days</option></select></label>
   <label>End (blank = now) <input id="end" type="datetime-local"></label>
   <button id="resetzoom" disabled>Reset zoom</button>
   <button id="reload">Reload</button>
@@ -329,10 +332,21 @@ function render() {
   $('#resetzoom').disabled = !zoom;
 }
 
+function setCustomDuration(secs) {   // populate the Length field from a duration in seconds, using the largest whole unit
+  $('#range').value = 'custom';
+  const unit = secs % 86400 === 0 ? 86400 : secs % 3600 === 0 ? 3600 : 60;
+  $('#customunit').value = String(unit);
+  $('#customdur').value = String(Math.max(1, Math.round(secs / unit)));
+}
+
 async function load() {
   const serial = $('#serial').value; if (!serial) return;
+  // End blank = now, so the window rolls; custom just supplies an arbitrary length.
   const end = $('#end').value ? new Date($('#end').value).getTime()/1000 : Date.now()/1000;
-  const start = end - +$('#range').value;
+  const span = $('#range').value === 'custom'
+    ? Math.max(60, (+$('#customdur').value || 6) * +$('#customunit').value)
+    : +$('#range').value;
+  const start = end - span;
   if (zoom && (zoom.min < start || zoom.max > end)) zoom = null;   // keep zoom if it still fits
   base = {start, end};
   $('#status').textContent = 'loading…';
@@ -343,13 +357,24 @@ async function load() {
 }
 
 async function init() {
-  const qs = new URLSearchParams(location.search);   // ?range=<seconds> preselects the range
-  if (qs.get('range') && [...$('#range').options].some(o => o.value === qs.get('range'))) $('#range').value = qs.get('range');
+  const qs = new URLSearchParams(location.search);   // ?range=<seconds>: a preset value selects it, any other length becomes a custom length
+  const qsRange = qs.get('range');
+  if (qsRange && [...$('#range').options].some(o => o.value === qsRange)) $('#range').value = qsRange;
+  else if (qsRange && +qsRange > 0) setCustomDuration(+qsRange);
   const systems = await (await fetch('/api/systems')).json();
   const sel = $('#serial'); sel.innerHTML = '';
   for (const s of systems) { const o = document.createElement('option'); o.value = s.serial; o.textContent = s.serial; sel.appendChild(o); }
   if (!systems.length) { $('#status').textContent = 'No data yet — run `carriermon ingest`.'; return; }
-  sel.onchange = load; $('#range').onchange = () => { zoom = null; load(); }; $('#end').onchange = () => { zoom = null; load(); };
+  const syncCustom = () => {   // show the Length field only for a custom range, seeded from the current window length
+    const custom = $('#range').value === 'custom';
+    $('#customwrap').hidden = !custom;
+    if (custom && !$('#customdur').value && base.end > base.start) setCustomDuration(Math.round(base.end - base.start));
+  };
+  sel.onchange = load;
+  $('#range').onchange = () => { zoom = null; syncCustom(); load(); };
+  $('#customdur').onchange = $('#customunit').onchange = () => { zoom = null; load(); };
+  $('#end').onchange = () => { zoom = null; load(); };
+  syncCustom();   // reflect an initial custom ?range=
   $('#reload').onclick = load;
   $('#showair').checked = showAir;
   $('#showair').onchange = () => { showAir = $('#showair').checked;
