@@ -106,7 +106,15 @@ class Store:
         cutoff = time.time() - retention_days * 86400
         with self.conn:
             deleted = self.conn.execute("DELETE FROM raw_messages WHERE ts < ?", (cutoff,)).rowcount
-            deleted += self.conn.execute("DELETE FROM readings WHERE ts < ?", (cutoff,)).rowcount
+            # Config (zone names, setpoint limits, the weekly program) is the near-static
+            # current state, recorded change-only — so a config row can be far older than
+            # the retention window yet still be the live value. Pruning it by timestamp
+            # would drop the last-known config (e.g. zone names) with nothing to re-emit
+            # it, leaving the dashboard to fall back to raw ids like "zone:1". Config rows
+            # are therefore exempt from the time window; they are few and rarely change.
+            deleted += self.conn.execute(
+                "DELETE FROM readings WHERE ts < ? AND entity NOT LIKE 'config%'", (cutoff,)
+            ).rowcount
         if vacuum and deleted:
             self.conn.execute("VACUUM")  # must run outside a transaction (the block above committed)
             # In WAL mode VACUUM's rewrite lands in the -wal file; checkpoint it back
