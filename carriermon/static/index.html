@@ -18,7 +18,8 @@
   #zonesel label { margin-right:.6rem; }
   .grid { display:grid; gap:.6rem; padding:.6rem; }
   #zones { height:calc(100vh - var(--hdr, 56px)); box-sizing:border-box; grid-auto-flow:column; grid-template-rows:minmax(0,3fr) minmax(0,2fr); }
-  @media (max-width: 900px) { #zones { height:auto; grid-auto-flow:row; grid-template-columns:1fr !important; grid-template-rows:none; } #zones .chart { height:150px; } }
+  #zones .card.spanrows { grid-row:1 / -1; }   /* system-wide chart fills a full-height column on the right */
+  @media (max-width: 900px) { #zones { height:auto; grid-auto-flow:row; grid-template-columns:1fr !important; grid-template-rows:none; } #zones .chart { height:150px; } #zones .card.spanrows { grid-row:auto; } }
   .card { padding:.4rem .6rem .2rem; background:var(--card); border-radius:8px; min-width:0; min-height:0; display:flex; flex-direction:column; }
   .card .head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline; gap:.1rem .8rem; margin-bottom:.15rem; }
   .card h2 { font-size:.95rem; margin:0; white-space:nowrap; }
@@ -60,6 +61,7 @@
   <button id="resetzoom" disabled>Reset zoom</button>
   <button id="reload">Reload</button>
   <label><input id="auto" type="checkbox" checked> auto-refresh (60 s)</label>
+  <label><input id="showair" type="checkbox" checked> Airflow chart</label>
   <span id="zonesel"></span>
   <span id="status"></span>
 </header>
@@ -82,12 +84,15 @@ const SERIES = {
   clsp:      {name:'Cool setpoint',    color:'#2878e6', width:1.5, dash:[6,4]},
   damper:    {name:'Damper',      color:'#a05adc', width:2},
   oat:       {name:'Outdoor temp', color:'rgba(107,142,35,.55)', width:5},
+  airflow:   {name:'Airflow',      color:'#0ea5a5', width:2},
 };
 const BANDS = {
   zoneconditioning: [['active_heat','Heat','rgba(230,60,30,.32)'], ['prep_heat','Pre-heat','rgba(245,190,40,.35)'],
                      ['active_cool','Cool','rgba(40,90,230,.32)'], ['prep_cool','Pre-cool','rgba(40,205,225,.35)']],
   fan:  [['off','Fan auto','rgba(120,120,120,.10)'], ['low','Fan low','rgba(60,190,90,.28)'], ['med','Fan medium','rgba(240,160,30,.32)'], ['high','Fan high','rgba(220,50,170,.30)']],
   mode: [['heat','Heat mode','#e63c1e'], ['cool','Cool mode','#2860e6'], ['auto','Auto mode','#8c8c8c'], ['fanonly','Fan only','#3cb464']],
+  // What the moving air actually is: furnace firing = hot, compressor stage = cold, else just circulating.
+  airstate: [['heat','Heating','rgba(230,60,30,.30)'], ['cool','Cooling','rgba(40,90,230,.30)'], ['fan','Circulating','rgba(120,120,120,.16)']],
 };
 function bandColor(kind, v) {
   v = String(v);
@@ -110,6 +115,25 @@ function intervals(rows, end) {
   return out;
 }
 const mapNum = (rows, f) => rows.map(r => ({ts:r.ts, value_num: r.value_num == null ? null : f(r.value_num)}));
+
+// Derive what the moving air is, per instant, from equipment state:
+//   heating (hot)  = furnace inducer running (idu.inducerrpm > 0)
+//   cooling (cold) = compressor running (odu.opstat is a "Stage N" / "dehumidify")
+//   fan            = blower moving air (cfm > 0) but neither of the above
+// Returned as [{ts, value_text}] rows so intervals()/drawBands() can shade it like any band.
+function airState(d) {
+  const get = (u, f) => (d[u] && d[u][f]) || [];
+  const cfm = get('idu', 'cfm'), indu = get('idu', 'inducerrpm'), odu = get('odu', 'opstat');
+  const times = [...new Set([...cfm, ...indu, ...odu].map(r => r.ts))].sort((a, b) => a - b);
+  const stepper = rows => { let i = 0, cur = null;
+    return t => { while (i < rows.length && rows[i].ts <= t) { cur = rows[i].value_num ?? rows[i].value_text; i++; } return cur; }; };
+  const fCfm = stepper(cfm), fIndu = stepper(indu), fOdu = stepper(odu);
+  return times.map(t => {
+    const cool = /^Stage/.test(String(fOdu(t) ?? '')) || fOdu(t) === 'dehumidify';
+    const state = (fIndu(t) > 0) ? 'heat' : cool ? 'cool' : (fCfm(t) > 0) ? 'fan' : 'off';
+    return {ts: t, value_text: state};
+  });
+}
 
 function alignStep(seriesMap, start, end) {
   const ts = new Set([start, end]);
@@ -201,7 +225,7 @@ const clampedTicks = ([lo, hi]) => (u, splits) => splits.map(v => v <= lo ? `\u2
 const clampTo = ([lo, hi]) => rows => mapNum(rows, v => Math.min(hi, Math.max(lo, v)));
 
 function chart(parent, title, seriesMap, bands, opts) {
-  const card = document.createElement('div'); card.className = 'card';
+  const card = document.createElement('div'); card.className = 'card' + (opts.spanRows ? ' spanrows' : '');
   const names = Object.keys(seriesMap);
   const key = names.map(n => `<span style="color:${SERIES[n].color}">${SERIES[n].name}${marker(SERIES[n])}</span>`).join('')
     + bands.flatMap(b => BANDS[b.kind].map(([,label,c]) => `<span class="band" style="background:${c}">${label}</span>`)).join('')
@@ -220,7 +244,8 @@ function chart(parent, title, seriesMap, bands, opts) {
                                      paths:uPlot.paths.stepped({align:1}), points:{show:false}, spanGaps:true}))],
     axes: [{incrs:INCRS, space:70, values:tickLabels, ticks:{show:false}, size:24, gap:4},
            {label:opts.ylabel, labelSize:18, size:48, ticks:{show:false}, incrs:[1,2,5,10,20,25,50,100], values: opts.yrange ? clampedTicks(opts.yrange) : undefined}],
-    scales: {x:{time:true}, y: opts.yrange ? {range: opts.yrange} : {}},
+    scales: {x:{time:true}, y: opts.yrange ? {range: opts.yrange}
+                                : opts.y0 ? {range: (u, _mn, mx) => [0, mx == null ? 100 : mx * 1.05]} : {}},
     cursor: {sync:{key:'cm'}, drag:{x:true, y:false}, y:false},
     hooks: {
       drawClear: [u => { drawBands(u, bands); drawMidnights(u); }],
@@ -264,6 +289,8 @@ window.addEventListener('resize', () => charts.forEach(({u,card,el,fill}) =>
 // ---------- zone selection ----------
 let hidden = new Set();
 try { hidden = new Set(JSON.parse(localStorage.getItem('cm.hiddenZones') || '[]')); } catch {}
+let showAir = true;
+try { showAir = JSON.parse(localStorage.getItem('cm.showAir') ?? 'true'); } catch {}
 function buildZoneSelector(zones) {
   const box = $('#zonesel'); box.innerHTML = 'Zones: ';
   for (const z of zones) {
@@ -284,7 +311,7 @@ function render() {
   const zonesEl = $('#zones'); zonesEl.innerHTML = ''; charts.length = 0;
   document.documentElement.style.setProperty('--hdr', $('header').offsetHeight + 'px');
   const shown = d.zones.filter(z => !hidden.has(z.entity));
-  zonesEl.style.gridTemplateColumns = `repeat(${Math.max(1, shown.length)}, minmax(0,1fr))`;
+  zonesEl.style.gridTemplateColumns = `repeat(${Math.max(1, shown.length + (showAir ? 1 : 0))}, minmax(0,1fr))`;
   const modeIv = intervals(d.system.state.mode, end), TEMP = [60, 80], clamp = clampTo(TEMP);
   for (const z of shown) {
     chart(zonesEl, `${z.name} — temperature`,
@@ -294,6 +321,11 @@ function render() {
     chart(zonesEl, `${z.name} — damper & fan`, {damper:mapNum(z.numeric.damperposition, v => v/15*100)},
       [{kind:'fan', ivals:intervals(z.state.fan, end)}], {fill:true, ylabel:'Open %', yrange:[-4,104]});
   }
+  // System-wide airflow (indoor blower CFM), shaded by whether the air is hot/cold/neutral.
+  if (showAir)
+    chart(zonesEl, 'System airflow', {airflow: (d.idu && d.idu.cfm) || []},
+      [{kind:'airstate', ivals:intervals(airState(d), end)}],
+      {fill:true, ylabel:'CFM', y0:true, spanRows:true});
   $('#resetzoom').disabled = !zoom;
 }
 
@@ -319,6 +351,10 @@ async function init() {
   if (!systems.length) { $('#status').textContent = 'No data yet — run `carriermon ingest`.'; return; }
   sel.onchange = load; $('#range').onchange = () => { zoom = null; load(); }; $('#end').onchange = () => { zoom = null; load(); };
   $('#reload').onclick = load;
+  $('#showair').checked = showAir;
+  $('#showair').onchange = () => { showAir = $('#showair').checked;
+    try { localStorage.setItem('cm.showAir', JSON.stringify(showAir)); } catch {}
+    render(); };
   let lastLoad = 0;
   const maybeLoad = () => { if ($('#auto').checked && !document.hidden) { lastLoad = Date.now(); load(); } };
   setInterval(maybeLoad, 60000);

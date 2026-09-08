@@ -20,7 +20,9 @@ ZONE_NUMERIC = ["rt", "rh", "htsp", "clsp", "damperposition"]
 ZONE_STATE = ["fan", "zoneconditioning", "hold", "currentActivity", "occupancy"]
 SYSTEM_NUMERIC = ["oat", "filtrlvl", "humlvl"]
 SYSTEM_STATE = ["mode", "humid"]
-UNIT_FIELDS = ["opstat", "opmode", "cfm", "blwrpm", "statpress", "type"]
+# inducerrpm (furnace combustion inducer) tells the dashboard when hot air is being
+# delivered; odu opstat ("Stage N"/"dehumidify") tells it when cold air is.
+UNIT_FIELDS = ["opstat", "opmode", "cfm", "blwrpm", "inducerrpm", "statpress", "type"]
 
 
 def create_app(settings: Settings) -> FastAPI:
