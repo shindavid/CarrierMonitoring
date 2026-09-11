@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import base64
+import hashlib
+import hmac
 import secrets
 import time
+import urllib.parse
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from .db import Store
 from .settings import Settings
@@ -30,23 +32,58 @@ def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(title="carriermon")
 
     if settings.auth_user and settings.auth_password:
+        # Form-based login with a signed session cookie, rather than HTTP Basic Auth: the
+        # browser-native Basic Auth popup isn't recognized by password managers (1Password),
+        # whereas a real <form> login page is filled and saved like any other site login.
         expected = (settings.auth_user, settings.auth_password)
+        COOKIE = "carriermon_session"
+        # Signing key is derived from the credentials, so no extra secret to configure and
+        # every stored cookie is invalidated automatically whenever the password changes.
+        key = hashlib.sha256(f"{settings.auth_user}:{settings.auth_password}".encode()).digest()
+        token = hmac.new(key, b"carriermon-session", hashlib.sha256).hexdigest()
+
+        def authed(request: Request) -> bool:
+            return hmac.compare_digest(request.cookies.get(COOKIE, ""), token)
+
+        def login_page(error: str = "") -> HTMLResponse:
+            html = (STATIC / "login.html").read_text().replace("{error}", error)
+            if settings.dev:
+                html = html.replace('<html lang="en">', '<html lang="en" data-env="dev">', 1)
+            return HTMLResponse(html)
+
+        @app.get("/login")
+        def login_form(request: Request) -> Response:
+            if authed(request):
+                return RedirectResponse("/", status_code=303)
+            return login_page()
+
+        @app.post("/login")
+        async def login_submit(request: Request) -> Response:
+            body = urllib.parse.parse_qs((await request.body()).decode())
+            user = body.get("username", [""])[0]
+            password = body.get("password", [""])[0]
+            ok = secrets.compare_digest(user, expected[0]) and secrets.compare_digest(password, expected[1])
+            if not ok:
+                return login_page("Incorrect username or password.")
+            resp = RedirectResponse("/", status_code=303)
+            # TLS is terminated by the Cloudflare tunnel, so the app only ever sees plain HTTP;
+            # marking the cookie Secure here would stop the tunnel from forwarding it back.
+            resp.set_cookie(COOKIE, token, max_age=30 * 86400, httponly=True, samesite="lax")
+            return resp
+
+        @app.post("/logout")
+        def logout() -> Response:
+            resp = RedirectResponse("/login", status_code=303)
+            resp.delete_cookie(COOKIE)
+            return resp
 
         @app.middleware("http")
-        async def basic_auth(request: Request, call_next):
-            """HTTP Basic Auth on every route. TLS is terminated by the Cloudflare tunnel."""
-            header = request.headers.get("authorization", "")
-            ok = False
-            if header.startswith("Basic "):
-                try:
-                    user, _, password = base64.b64decode(header[6:]).decode().partition(":")
-                    ok = secrets.compare_digest(user, expected[0]) and secrets.compare_digest(password, expected[1])
-                except (ValueError, UnicodeDecodeError):
-                    ok = False
-            if not ok:
-                return Response("Authentication required", status_code=401,
-                                headers={"WWW-Authenticate": 'Basic realm="Carrier Monitor", charset="UTF-8"'})
-            return await call_next(request)
+        async def require_login(request: Request, call_next):
+            if request.url.path in ("/login", "/logout") or authed(request):
+                return await call_next(request)
+            if request.url.path.startswith("/api/"):
+                return Response("Authentication required", status_code=401)
+            return RedirectResponse("/login", status_code=303)
 
     def _range(start: float | None, end: float | None) -> tuple[float, float]:
         end = end or time.time()
