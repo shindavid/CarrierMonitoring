@@ -41,7 +41,10 @@ CREATE TABLE IF NOT EXISTS control_state (
     override            TEXT,     -- why the controller switched itself off, or NULL
     override_ts         REAL,
     dry_run             INTEGER,
-    loop_alive_ts       REAL      -- heartbeat; the UI warns when this goes stale
+    loop_alive_ts       REAL,     -- heartbeat; the UI warns when this goes stale
+    lean_side           TEXT,     -- 'below' | 'above' | NULL: which way the whole house leans (rule 3)
+    lean_since          REAL,     -- when that lean started
+    lean_target         REAL      -- target the lean was measured against
 );
 CREATE TABLE IF NOT EXISTS control_log (
     id      INTEGER PRIMARY KEY,
@@ -69,6 +72,11 @@ class ControlStore:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")  # web + loop both write
         self.conn.executescript(SCHEMA)
+        # Columns added after the first release; CREATE TABLE IF NOT EXISTS won't add them.
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(control_state)")}
+        for column, kind in (("lean_side", "TEXT"), ("lean_since", "REAL"), ("lean_target", "REAL")):
+            if column not in have:
+                self.conn.execute(f"ALTER TABLE control_state ADD COLUMN {column} {kind}")
         self.conn.row_factory = sqlite3.Row
         with self.conn:
             self.conn.execute(

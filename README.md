@@ -44,7 +44,9 @@ per-zone demand then steers the dampers). Rules, in order:
 
 1. any zone ≥ T+2 and outdoor > T−10 → cool; any zone ≤ T−2 and outdoor < T+10 → heat
    (both → the larger error wins, equal → outdoor decides)
-2. no zone out of band: outdoor ≥ T+2 → cool, outdoor ≤ T−2 → heat, else keep the current mode
+2. every zone ≤ T with at least one below it, for 5 minutes → heat (mirror → cool)
+3. no zone out of band: outdoor ≥ T+2 → cool, outdoor ≤ T−2 → heat
+4. otherwise keep the current mode
 
 It writes cool T / heat T−2 in cool mode and heat T / cool T+2 in heat mode (the
 thermostat's deadband). Any change made at the thermostat or in the Carrier app to the
