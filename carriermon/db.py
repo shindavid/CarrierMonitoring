@@ -160,6 +160,17 @@ class Store:
         args.append(limit)
         return [dict(r) for r in self.conn.execute(sql, args)]
 
+    def latest(self, serial: str, entity: str, field: str) -> Any:
+        """Most recent value of one field (number if numeric, else text), or None."""
+        row = self.conn.execute(
+            "SELECT value_num, value_text FROM readings WHERE serial=? AND entity=? AND field=? "
+            "ORDER BY ts DESC LIMIT 1",
+            (serial, entity, field),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["value_num"] if row["value_num"] is not None else row["value_text"]
+
     def serials(self) -> list[str]:
         return [r[0] for r in self.conn.execute("SELECT DISTINCT serial FROM readings")]
 

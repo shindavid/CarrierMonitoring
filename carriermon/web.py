@@ -11,7 +11,9 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from pydantic import BaseModel, Field
 
+from .controldb import ControlStore
 from .db import Store
 from .settings import Settings
 
@@ -27,8 +29,16 @@ SYSTEM_STATE = ["mode", "humid"]
 UNIT_FIELDS = ["opstat", "opmode", "cfm", "blwrpm", "inducerrpm", "statpress", "type"]
 
 
+class ControlEdit(BaseModel):
+    enabled: bool | None = None
+    target: float | None = Field(default=None, ge=55, le=85)
+
+
 def create_app(settings: Settings) -> FastAPI:
     store = Store(settings.db_path, read_only=True)
+    # The controller's settings/state/log live in this checkout's own small database
+    # (read-write even in dev — it is not the production readings file).
+    control = ControlStore(settings.control_db_path)
     app = FastAPI(title="carriermon")
 
     if settings.auth_user and settings.auth_password:
@@ -97,6 +107,38 @@ def create_app(settings: Settings) -> FastAPI:
             # Marks the page as the dev dashboard: amber chrome, "DEV" badge, tab title/favicon.
             html = html.replace('<html lang="en">', '<html lang="en" data-env="dev">', 1)
         return HTMLResponse(html)
+
+    @app.get("/control")
+    def control_page() -> Response:
+        html = (STATIC / "control.html").read_text()
+        if settings.dev:
+            html = html.replace('<html lang="en">', '<html lang="en" data-env="dev">', 1)
+        return HTMLResponse(html)
+
+    def control_payload() -> dict:
+        state = control.state()
+        stale_after = settings.control_interval * 3
+        state["loop_alive"] = bool(state["loop_alive_ts"]) and time.time() - state["loop_alive_ts"] < stale_after
+        return {"settings": control.settings(), "state": state, "log": control.recent_log(300),
+                "config": {"interval": settings.control_interval, "dev": settings.dev}}
+
+    @app.get("/api/control")
+    def control_get() -> dict:
+        return control_payload()
+
+    @app.post("/api/control")
+    def control_set(edit: ControlEdit) -> dict:
+        """Only two knobs: on/off and the target. Turning it on clears an override."""
+        if edit.enabled is None and edit.target is None:
+            raise HTTPException(400, "nothing to change")
+        before = control.settings()
+        control.update_settings(enabled=edit.enabled, target=edit.target)
+        if edit.enabled is not None and edit.enabled != before["enabled"]:
+            control.log("enabled" if edit.enabled else "disabled",
+                        f"switched {'on' if edit.enabled else 'off'} from the control page")
+        if edit.target is not None and edit.target != before["target"]:
+            control.log("target", f"target changed {before['target']:g} → {edit.target:g}")
+        return control_payload()
 
     @app.get("/api/systems")
     def systems() -> list[dict]:

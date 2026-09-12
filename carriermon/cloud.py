@@ -103,6 +103,7 @@ class CloudIngest:
         # aiohttp's ClientSession must be created while the loop is running.
         self.api = ApiConnection(self.settings.username, self.settings.password)
         ws = None
+        control_task: asyncio.Task | None = None
         try:
             await self.full_load("cloud:load")
             self.updater = WebsocketDataUpdater(systems=self.systems)
@@ -112,6 +113,14 @@ class CloudIngest:
             ws.callback_add(self.on_ws_message)
             await ws.create_task_listener()
             log.info("websocket listener started; polling every %ss", self.settings.poll_seconds)
+            # The custom heat/cool controller lives here because this process holds the
+            # Carrier session. It does nothing until enabled from the /control page.
+            from .control import CarrierApplier, ControlLoop, DryRunApplier
+            from .controldb import ControlStore
+            applier = DryRunApplier() if self.settings.control_dry_run else CarrierApplier(self.api)
+            control_task = asyncio.create_task(
+                ControlLoop(self.settings, self.store, ControlStore(self.settings.control_db_path), applier).run()
+            )
             last_prune = 0.0
             while True:
                 await asyncio.sleep(self.settings.poll_seconds)
@@ -132,6 +141,8 @@ class CloudIngest:
                     except Exception:  # noqa: BLE001
                         log.exception("retention prune failed; will retry tomorrow")
         finally:
+            if control_task is not None:
+                control_task.cancel()
             if ws is not None:
                 ws.running = False
                 for task in (ws.task_listener, ws.task_heartbeat):

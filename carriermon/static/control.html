@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carrier Control</title>
+<link id="favicon" rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%23e6503c'/></svg>">
+<style>
+  :root { color-scheme: light dark; --fg:#222; --bg:#fff; --muted:#777; --card:#f6f6f8; --line:#ddd;
+          --on:#16a34a; --off:#6b7280; --heat:#e63c1e; --cool:#2860e6; --warn:#b45309; --warnbg:#fef3c7; --bad:#b91c1c; --badbg:#fee2e2; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e6e6e6; --bg:#141518; --muted:#999; --card:#1e2024; --line:#333;
+          --warnbg:#3b2a08; --bad:#fca5a5; --badbg:#3f1212; } }
+  body { margin:0; font:16px/1.45 system-ui, sans-serif; color:var(--fg); background:var(--bg); }
+  header { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; padding:.6rem 1rem; border-bottom:1px solid var(--line); }
+  header h1 { font-size:1.1rem; margin:0; }
+  header a { color:var(--muted); text-decoration:none; }
+  main { max-width:640px; margin:0 auto; padding:.8rem; display:grid; gap:.8rem; }
+  .card { padding:.8rem 1rem; background:var(--card); border-radius:10px; }
+  .card h2 { font-size:.85rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 .5rem; }
+  button { font:inherit; padding:.5rem .9rem; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
+  button:disabled { opacity:.45; cursor:default; }
+  .controls { display:flex; flex-wrap:wrap; gap:1rem 2rem; align-items:center; }
+  #power { min-width:7.5rem; font-weight:700; font-size:1.05rem; color:#fff; border:none; background:var(--off); }
+  #power.on { background:var(--on); }
+  .target { display:flex; align-items:center; gap:.5rem; }
+  .target button { width:2.6rem; height:2.6rem; font-size:1.3rem; padding:0; }
+  .target .val { font-size:1.9rem; font-weight:700; min-width:4rem; text-align:center; font-variant-numeric:tabular-nums; }
+  .target .val small { font-size:.9rem; font-weight:400; color:var(--muted); }
+  .banner { padding:.6rem .9rem; border-radius:8px; display:none; }
+  .banner.show { display:block; }
+  .banner.warn { background:var(--warnbg); color:var(--warn); }
+  .banner.bad { background:var(--badbg); color:var(--bad); }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:.25rem 1rem; }
+  .kv dt { color:var(--muted); }
+  .kv dd { margin:0; }
+  .mode { font-weight:700; text-transform:uppercase; }
+  .mode.heat { color:var(--heat); } .mode.cool { color:var(--cool); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:.25rem .4rem; border-bottom:1px solid var(--line); }
+  th { font-weight:600; color:var(--muted); font-size:.85rem; }
+  td.num { text-align:right; }
+  .hot { color:var(--heat); } .cold { color:var(--cool); }
+  #log { list-style:none; margin:0; padding:0; font-size:.9rem; }
+  #log li { padding:.3rem 0; border-bottom:1px solid var(--line); display:grid; grid-template-columns:auto auto 1fr; gap:.6rem; align-items:baseline; }
+  #log time { color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .tag { font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; padding:.05rem .4rem; border-radius:4px; background:var(--line); white-space:nowrap; }
+  .tag.override, .tag.error { background:var(--badbg); color:var(--bad); }
+  .tag.mode { background:var(--warnbg); color:var(--warn); }
+  .tag.write { background:color-mix(in srgb, var(--cool) 18%, transparent); }
+  .tag.check { opacity:.6; }
+  #log li.check { color:var(--muted); }
+  #status { color:var(--muted); font-size:.85rem; margin-left:auto; }
+  .badge { display:inline-block; padding:.1rem .45rem; border-radius:4px; font-weight:700; font-size:.75rem; letter-spacing:.08em; }
+  .badge.dry { background:var(--warn); color:#fff; }
+
+  #devbadge { display:none; }
+  :root[data-env="dev"] { --dev:#d97706; }
+  @media (prefers-color-scheme: dark) { :root[data-env="dev"] { --dev:#f59e0b; } }
+  [data-env="dev"] header { background:color-mix(in srgb, var(--dev) 14%, var(--bg)); border-bottom:3px solid var(--dev); }
+  [data-env="dev"] #devbadge { display:inline-block; padding:.1rem .45rem; border-radius:4px; background:var(--dev); color:#fff; font-weight:700; font-size:.8rem; letter-spacing:.08em; }
+  [data-env="dev"] header h1 { color:var(--dev); }
+  [data-env="dev"] body::after { content:""; position:fixed; inset:0; border:3px solid var(--dev); pointer-events:none; z-index:10; }
+</style>
+</head>
+<body>
+<header>
+  <span id="devbadge" title="Dev checkout: the controller here is always dry-run">DEV</span>
+  <h1>Carrier Control</h1>
+  <a href="/">← Dashboard</a>
+  <span id="status"></span>
+</header>
+<main>
+  <div id="override" class="banner bad"></div>
+  <div id="loopwarn" class="banner warn"></div>
+  <div id="drywarn" class="banner warn"></div>
+
+  <div class="card">
+    <div class="controls">
+      <button id="power">…</button>
+      <div class="target">
+        <button id="dec" aria-label="lower target">−</button>
+        <div class="val"><span id="target">–</span><small>°F</small></div>
+        <button id="inc" aria-label="raise target">+</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Controller</h2>
+    <dl class="kv">
+      <dt>Mode</dt><dd id="mode">–</dd>
+      <dt>Because</dt><dd id="rule">–</dd>
+      <dt>Rules ask for</dt><dd id="decision">–</dd>
+      <dt>Thermostat</dt><dd id="thermo">–</dd>
+      <dt>Outdoor</dt><dd id="oat">–</dd>
+      <dt>Last check</dt><dd id="lasteval">–</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h2>Zones</h2>
+    <table>
+      <thead><tr><th>Zone</th><th class="num">Temp</th><th class="num">vs target</th><th class="num">Heat</th><th class="num">Cool</th><th>Hold</th></tr></thead>
+      <tbody id="zones"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Log <label style="float:right; text-transform:none; letter-spacing:0; font-weight:400"><input id="showchecks" type="checkbox" checked> every-minute checks</label></h2>
+    <ul id="log"></ul>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+if (document.documentElement.dataset.env === 'dev') {
+  document.title = 'DEV — ' + document.title;
+  $('#favicon').href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%23d97706'/><text x='16' y='22' font-size='18' font-family='sans-serif' font-weight='bold' fill='%23fff' text-anchor='middle'>D</text></svg>";
+}
+
+let data = null, pendingTarget = null, targetTimer = null;
+const fmtT = ts => ts ? new Date(ts * 1000).toLocaleString([], {month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit'}) : '–';
+const ago = ts => { if (!ts) return '–'; const m = Math.round((Date.now()/1000 - ts) / 60); return m < 1 ? 'just now' : m < 90 ? `${m} min ago` : `${Math.round(m/60)} h ago`; };
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+function render() {
+  const {settings, state, log, config} = data;
+  const on = settings.enabled;
+  $('#power').textContent = on ? 'ON' : 'OFF';
+  $('#power').className = on ? 'on' : '';
+  if (pendingTarget === null) $('#target').textContent = settings.target;
+
+  const ov = $('#override');
+  ov.className = 'banner bad' + (state.override ? ' show' : '');
+  ov.textContent = state.override ? `Switched off ${fmtT(state.override_ts)}: ${state.override}. Press ON to take control again.` : '';
+  const lw = $('#loopwarn');
+  lw.className = 'banner warn' + (!state.loop_alive ? ' show' : '');
+  lw.textContent = state.loop_alive ? '' : config.dev
+    ? 'Controller loop is not running. Start it here with `carriermon control` (dry-run).'
+    : 'Controller loop is not running (the ingest service hosts it). Nothing will be written until it is back.';
+  const dw = $('#drywarn');
+  dw.className = 'banner warn' + (state.loop_alive && state.dry_run ? ' show' : '');
+  dw.textContent = state.dry_run ? 'DRY RUN: decisions are logged but nothing is written to the thermostat.' : '';
+
+  const ev = state.last_eval || {};
+  const modeEl = $('#mode');
+  modeEl.textContent = on && state.mode ? state.mode : (on ? 'deciding…' : 'off');
+  modeEl.className = 'mode ' + (on && state.mode ? state.mode : '');
+  if (on && state.mode_since) modeEl.textContent += ` (since ${fmtT(state.mode_since)})`;
+  $('#rule').textContent = on ? (state.rule || '–') : 'controller is off; the thermostat is on its own';
+  $('#decision').textContent = ev.decision_rule ? `${ev.decision || 'no change'} — ${ev.decision_rule}` : '–';
+  $('#thermo').textContent = ev.thermostat_mode ? `mode ${ev.thermostat_mode}` : '–';
+  $('#oat').textContent = ev.oat != null ? `${ev.oat} °F` : '–';
+  $('#lasteval').textContent = state.last_eval_ts ? `${ago(state.last_eval_ts)}${ev.mismatch ? ' — mismatch: ' + ev.mismatch : ''}` : 'never';
+
+  const T = ev.target ?? settings.target;
+  $('#zones').innerHTML = (ev.zones || []).map(z => {
+    const d = z.rt == null ? null : z.rt - T;
+    const cls = d == null ? '' : d >= 2 ? 'hot' : d <= -2 ? 'cold' : '';
+    return `<tr><td>${esc(z.name)}</td><td class="num">${z.rt ?? '–'}</td><td class="num ${cls}">${d == null ? '–' : (d > 0 ? '+' : '') + d}</td>
+            <td class="num">${z.htsp ?? '–'}</td><td class="num">${z.clsp ?? '–'}</td><td>${z.hold ?? '–'}</td></tr>`;
+  }).join('') || '<tr><td colspan="6">no evaluation yet</td></tr>';
+
+  const showChecks = $('#showchecks').checked;
+  $('#log').innerHTML = log.filter(e => showChecks || e.event !== 'check').map(e =>
+    `<li class="${esc(e.event)}"><time>${fmtT(e.ts)}</time><span class="tag ${esc(e.event)}">${esc(e.event)}</span><span>${esc(e.message)}</span></li>`).join('');
+  $('#status').textContent = `updated ${new Date().toLocaleTimeString()}`;
+}
+
+async function load() {
+  try { data = await (await fetch('/api/control')).json(); render(); }
+  catch (e) { $('#status').textContent = 'load failed: ' + e; }
+}
+async function post(body) {
+  const r = await fetch('/api/control', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
+  if (!r.ok) { $('#status').textContent = 'save failed: ' + (await r.text()); return; }
+  data = await r.json(); render();
+}
+
+$('#power').onclick = () => post({enabled: !data.settings.enabled});
+function bump(delta) {
+  const cur = pendingTarget ?? data.settings.target;
+  pendingTarget = Math.min(85, Math.max(55, cur + delta));
+  $('#target').textContent = pendingTarget;
+  clearTimeout(targetTimer);
+  targetTimer = setTimeout(async () => { const t = pendingTarget; pendingTarget = null; await post({target: t}); }, 600);
+}
+$('#inc').onclick = () => bump(1);
+$('#showchecks').onchange = () => { if (data) render(); };
+$('#dec').onclick = () => bump(-1);
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

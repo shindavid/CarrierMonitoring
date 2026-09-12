@@ -32,6 +32,9 @@ class Settings:
     web_port: int
     auth_user: str | None
     auth_password: str | None
+    control_db_path: Path
+    control_interval: int
+    control_dry_run: bool
 
     def require_carrier_login(self) -> None:
         if not self.username or not self.password:
@@ -51,4 +54,7 @@ class Settings:
             web_port=int(os.environ.get("CARRIERMON_PORT", "8471")),
             auth_user=os.environ.get("CARRIERMON_AUTH_USER") or None,
             auth_password=os.environ.get("CARRIERMON_AUTH_PASSWORD") or None,
+            control_db_path=Path(os.environ.get("CARRIERMON_CONTROL_DB", "data/control.sqlite")),
+            control_interval=int(os.environ.get("CARRIERMON_CONTROL_INTERVAL", "60")),
+            control_dry_run=os.environ.get("CARRIERMON_CONTROL_DRY_RUN", "") == "1",
         )
