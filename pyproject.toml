@@ -10,8 +10,15 @@ dependencies = [
     "uvicorn[standard]",
 ]
 
+[project.optional-dependencies]
+test = ["pytest", "httpx"]   # httpx: FastAPI's TestClient
+
 [project.scripts]
 carriermon = "carriermon.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]      # tests import shared helpers from conftest
 
 [build-system]
 requires = ["setuptools>=68"]
