@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from carriermon.auth import (HomeDetector, check_password, client_ip, hash_password, load_secret, sign_session,
-                             verify_session)
+from carriermon.auth import (SESSION_REFRESH_AFTER, SESSION_TTL, HomeDetector, check_password, client_ip,
+                             hash_password, load_secret, session_needs_refresh, sign_session, verify_session)
 from carriermon.controldb import ControlStore
 
 
@@ -51,6 +51,14 @@ class TestSessions:
 
     def test_unknown_role_rejected_even_if_signed(self):
         assert verify_session(self.secret, sign_session(self.secret, "d", "root")) is None
+
+    def test_refresh_after_a_day_of_use(self):
+        fresh = sign_session(self.secret, "d", "admin")
+        assert not session_needs_refresh(self.secret, fresh)
+        used = sign_session(self.secret, "d", "admin", ttl=SESSION_TTL - SESSION_REFRESH_AFTER - 1)
+        assert session_needs_refresh(self.secret, used)
+        assert not session_needs_refresh(self.secret, "garbage")
+        assert not session_needs_refresh(self.secret, sign_session(self.secret, "d", "admin", ttl=-1))
 
 
 class TestClientIp:

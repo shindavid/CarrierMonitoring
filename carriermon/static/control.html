@@ -61,16 +61,22 @@
   .stp button { width:2.3rem; height:1.75rem; padding:0; font-size:1.05rem; line-height:1; }
   .cell .pname { display:none; font-weight:600; color:var(--fg); margin-right:.3rem; }
   .cell .pname .ico { font-size:1rem; margin-right:.2rem; }
-  /* Phones: one column. Zone name + temp on a line, then the day cell, then the night
-     cell, each full width; the period label moves into the cell's "from" line. */
+  /* Phones: one row per zone — name + temp on the left, ONE period cell on the right.
+     A Day/Night switch above the list picks which period is shown (default: the one
+     active now); the period label also moves into the cell's "from" line. */
+  .periodsel { display:none; gap:.4rem; margin-bottom:.5rem; }
+  .periodsel button { flex:1; padding:.4rem; color:var(--muted); }
+  .periodsel button.on { background:var(--fg); color:var(--bg); border-color:var(--fg); }
   @media (max-width: 560px) {
     main { padding:.5rem; }
     .card { padding:.6rem .7rem; }
-    .zgrid { grid-template-columns:1fr; gap:.3rem; }
+    .periodsel { display:flex; }
+    .zgrid { grid-template-columns:auto 1fr; gap:.4rem .5rem; align-items:center; }
     .zgrid .hdr { display:none; }
-    .zgrid .zname { display:flex; align-items:baseline; gap:.6rem; padding-top:.2rem; }
+    .zgrid .zname { padding-top:0; max-width:6rem; }
     .zgrid .ztemp { font-size:1.2rem; }
-    .cell { min-width:0; }
+    .zgrid.show-day .cell.p-night, .zgrid.show-night .cell.p-day { display:none; }
+    .cell { min-width:0; padding:.3rem .4rem .4rem; }
     .cell .pname { display:inline; }
   }
   .banner { padding:.6rem .9rem; border-radius:8px; display:none; }
@@ -156,6 +162,7 @@ if (document.documentElement.dataset.env === 'dev') {
 }
 
 let data = null;
+let mobilePeriod = null;   // which period the phone layout shows; null = pick the active one
 const pending = {};   // `${entity}|${period}` -> {lo, d, hi} being edited (debounced)
 const timers = {};
 const MIN_W = 2, T_MIN = 60, T_MAX = 80;   // the slider spans this; the API allows a bit more
@@ -179,7 +186,7 @@ function cellHtml(z, period) {
       <button data-k="${esc(key)}" data-f="${f}" data-d="1" aria-label="raise ${label}">+</button>
       <span class="lbl ${cls}">${label}</span>
       <button data-k="${esc(key)}" data-f="${f}" data-d="-1" aria-label="lower ${label}">−</button></div>`;
-  return `<div class="cell" data-k="${esc(key)}">
+  return `<div class="cell p-${period}" data-k="${esc(key)}">
     <span class="from"><span class="pname"><span class="ico">${period === 'day' ? '☀' : '☾'}</span>${period === 'day' ? 'Day' : 'Night'}</span>from <input type="time" data-e="${esc(z.entity)}" data-f="${period}_start" value="${esc(z[`${period}_start`])}"></span>
     <div class="sl"><span class="end">${v.lo}</span>
       <div class="slider range" data-k="${esc(key)}">
@@ -211,22 +218,33 @@ function renderZoneCfg() {
     const head = `<div class="hdr zonehdr">Zone</div><div class="hdr"><span class="ico">☀</span>Day</div><div class="hdr"><span class="ico">☾</span>Night</div>`;
     const rows = data.zones.map((z, i) =>
       `${i ? '<div class="sep"></div>' : ''}<div class="zname">${esc(z.name)}<div class="ztemp" data-e="${esc(z.entity)}">–</div></div>${cellHtml(z, 'day')}${cellHtml(z, 'night')}`).join('');
-    $('#zonecfg').innerHTML = data.zones.length ? `<div class="zgrid">${head}${rows}</div>` : '<em>no zones known yet</em>';
+    const sel = `<div class="periodsel"><button data-p="day">☀ Day</button><button data-p="night">☾ Night</button></div>`;
+    $('#zonecfg').innerHTML = data.zones.length ? `${sel}<div class="zgrid">${head}${rows}</div>` : '<em>no zones known yet</em>';
     grid = $('#zonecfg .zgrid');
     if (!grid) return;
     grid.dataset.sig = sig;
+    document.querySelectorAll('#zonecfg .periodsel button').forEach(b => b.onclick = () => { mobilePeriod = b.dataset.p; paintPeriodSel(); });
     grid.querySelectorAll('button[data-k]').forEach(b => b.onclick = () => bump(b.dataset.k, b.dataset.f, +b.dataset.d));
     grid.querySelectorAll('.slider .mark').forEach(m => m.onpointerdown = startDrag);
     grid.querySelectorAll('input[type=time]').forEach(i => i.onchange = e => {
       if (e.target.value) post({zones: {[i.dataset.e]: {[i.dataset.f]: e.target.value}}});
     });
   }
+  paintPeriodSel();
   const temps = Object.fromEntries((((data.state || {}).last_eval || {}).zones || []).map(z => [z.entity, z.rt]));
   for (const z of data.zones) {
     const t = temps[z.entity];
     $(`#zonecfg .ztemp[data-e="${CSS.escape(z.entity)}"]`).innerHTML = t == null ? '–' : `${t}<small>°F now</small>`;
     for (const period of ['day', 'night']) paintCell(z, period);
   }
+}
+function paintPeriodSel() {
+  const grid = $('#zonecfg .zgrid');
+  if (!grid) return;
+  const period = mobilePeriod || (data.zones.length ? periodNow(data.zones[0]) : 'day');
+  grid.classList.toggle('show-day', period === 'day');
+  grid.classList.toggle('show-night', period === 'night');
+  document.querySelectorAll('#zonecfg .periodsel button').forEach(b => b.classList.toggle('on', b.dataset.p === period));
 }
 function paintCell(z, period) {
   const key = `${z.entity}|${period}`;

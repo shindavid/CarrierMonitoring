@@ -73,6 +73,9 @@ match the server's own public address (IPv4 exactly, IPv6 by /64 prefix — phon
 arrive over IPv6), be a LAN address, or be in `CARRIERMON_HOME_NETWORKS`;
 away from home they get a "log in as an admin or connect to the home wifi" page.
 Every change made through the control page is logged with the login that made it.
+Logins last indefinitely: the session cookie is issued for 400 days (the browser maximum)
+and renewed on every visit, so it only lapses after a year of not using the site, on
+log-out, or if `data/secret.key` (the cookie signing key) is replaced.
 
 ### What gets stored (`data/carriermon.sqlite`)
 - `raw_messages` — every payload from Carrier, verbatim.

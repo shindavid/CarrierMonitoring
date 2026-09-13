@@ -11,7 +11,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
-from .auth import SESSION_TTL, HomeDetector, client_ip, load_secret, sign_session, verify_session
+from .auth import (SESSION_TTL, HomeDetector, client_ip, load_secret, session_needs_refresh, sign_session,
+                   verify_session)
 from .controldb import ControlStore
 from .db import Store
 from .settings import Settings
@@ -93,10 +94,13 @@ def create_app(settings: Settings) -> FastAPI:
         if role is None:
             return login_page("Incorrect username or password.")
         resp = RedirectResponse("/", status_code=303)
+        set_session_cookie(resp, user, role)
+        return resp
+
+    def set_session_cookie(resp: Response, user: str, role: str) -> None:
         # TLS is terminated by the Cloudflare tunnel, so the app only ever sees plain HTTP;
         # marking the cookie Secure here would stop the tunnel from forwarding it back.
         resp.set_cookie(COOKIE, sign_session(secret, user, role), max_age=SESSION_TTL, httponly=True, samesite="lax")
-        return resp
 
     @app.post("/logout")
     def logout() -> Response:
@@ -122,6 +126,10 @@ def create_app(settings: Settings) -> FastAPI:
                 # Keep the cookie: back on the home wifi they are simply in again.
                 return JSONResponse({"detail": AWAY}, status_code=403) if api \
                     else HTMLResponse(login_page(AWAY).body, status_code=403)
+            response = await call_next(request)
+            if session_needs_refresh(secret, request.cookies.get(COOKIE, "")):
+                set_session_cookie(response, *session)   # sliding expiry: stays logged in while in use
+            return response
         return await call_next(request)
 
     def request_ip(request: Request) -> str | None:

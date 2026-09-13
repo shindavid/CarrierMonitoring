@@ -31,7 +31,12 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 PBKDF2_ITERATIONS = 200_000
-SESSION_TTL = 30 * 86400
+# Sessions are meant to last "forever": the cookie is issued for the longest lifetime
+# browsers honour (Chrome caps Max-Age at 400 days) and re-issued on every visit, so
+# it only lapses if a device stays away for more than a year. Logging out, or a new
+# data/secret.key, ends it.
+SESSION_TTL = 400 * 86400
+SESSION_REFRESH_AFTER = 86400   # re-issue the cookie once a day of use, not on every request
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 ROLES = ("admin", "user")
 
@@ -67,6 +72,18 @@ def sign_session(secret: bytes, user: str, role: str, ttl: float = SESSION_TTL) 
 
 def verify_session(secret: bytes, token: str) -> tuple[str, str] | None:
     """(user, role) if the token is intact and unexpired, else None."""
+    parsed = _parse_session(secret, token)
+    return None if parsed is None else parsed[:2]
+
+
+def session_needs_refresh(secret: bytes, token: str) -> bool:
+    """True once a valid token has been in use for a day (its remaining life has
+    dropped below the full TTL by that much) — time to slide the expiry forward."""
+    parsed = _parse_session(secret, token)
+    return parsed is not None and parsed[2] - time.time() < SESSION_TTL - SESSION_REFRESH_AFTER
+
+
+def _parse_session(secret: bytes, token: str) -> tuple[str, str, int] | None:
     parts = token.split("|")
     if len(parts) != 4:
         return None
@@ -76,7 +93,7 @@ def verify_session(secret: bytes, token: str) -> tuple[str, str] | None:
         return None
     if not exp.isdigit() or int(exp) < time.time() or role not in ROLES:
         return None
-    return user, role
+    return user, role, int(exp)
 
 
 # ---------------------------------------------------------------- where is the client?

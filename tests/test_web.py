@@ -212,3 +212,21 @@ class TestAccounts:
     def test_open_server_is_admin_and_local(self, client: TestClient):
         me = client.get("/api/control").json()["me"]
         assert me["user"] is None and me["role"] == "admin" and me["can_edit"] is True
+
+
+class TestSessionLifetime:
+    def test_cookie_is_long_lived_and_slides(self, tmp_path: Path):
+        from carriermon.auth import SESSION_REFRESH_AFTER, SESSION_TTL, load_secret, sign_session
+        populate_readings(tmp_path / "readings.sqlite")
+        ControlStore(tmp_path / "control.sqlite").add_user("d", "pw", "admin")
+        c = TestClient(create_app(make_settings(tmp_path, dev=False)), follow_redirects=False)
+        r = c.post("/login", data={"username": "d", "password": "pw"})
+        assert f"Max-Age={SESSION_TTL}" in r.headers["set-cookie"]
+        # a fresh cookie is not re-issued on the next request
+        assert "set-cookie" not in c.get("/api/control").headers
+        # a cookie that has been in use for over a day is re-issued with a full lifetime
+        secret = load_secret(tmp_path / "secret.key")
+        old = sign_session(secret, "d", "admin", ttl=SESSION_TTL - SESSION_REFRESH_AFTER - 5)
+        r = c.get("/api/control", cookies={"carriermon_session": old})
+        assert r.status_code == 200 and f"Max-Age={SESSION_TTL}" in r.headers["set-cookie"]
+        assert r.headers["set-cookie"].split(";")[0] != f"carriermon_session={old}"
