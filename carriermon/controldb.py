@@ -7,7 +7,9 @@ edits settings) and the loop host (ingest in prod, ``carriermon control`` in dev
 open this file read-write.
 
 Tables
-- control_settings: one row — what the user asked for (enabled, target).
+- control_settings: one row — on/off.
+- control_zones:    one row per zone — its day/night desired temp and tolerable range,
+                    and when day/night start. Zones without a row get the defaults.
 - control_state:    one row — what the loop is doing / last wrote / why.
 - control_log:      decisions, writes, overrides, errors (newest first in the UI).
 """
@@ -22,13 +24,20 @@ from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS control_settings (
-    id           INTEGER PRIMARY KEY CHECK (id = 1),
-    enabled      INTEGER NOT NULL DEFAULT 0,
-    target_day   REAL    NOT NULL DEFAULT 70,
-    target_night REAL    NOT NULL DEFAULT 70,
-    day_start    TEXT    NOT NULL DEFAULT '07:00',   -- HH:MM local time
-    night_start  TEXT    NOT NULL DEFAULT '22:00',
-    updated_ts   REAL    NOT NULL
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled     INTEGER NOT NULL DEFAULT 0,
+    updated_ts  REAL    NOT NULL
+);
+CREATE TABLE IF NOT EXISTS control_zones (
+    entity      TEXT PRIMARY KEY,   -- 'zone:1' ...
+    day_lo      REAL NOT NULL,      -- tolerable range [lo, hi], at least MIN_WIDTH wide
+    day_d       REAL NOT NULL,      -- desired temp, lo <= d <= hi
+    day_hi      REAL NOT NULL,
+    night_lo    REAL NOT NULL,
+    night_d     REAL NOT NULL,
+    night_hi    REAL NOT NULL,
+    day_start   TEXT NOT NULL,      -- HH:MM local time
+    night_start TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS control_state (
     id                  INTEGER PRIMARY KEY CHECK (id = 1),
@@ -44,17 +53,24 @@ CREATE TABLE IF NOT EXISTS control_state (
     override            TEXT,     -- why the controller switched itself off, or NULL
     override_ts         REAL,
     dry_run             INTEGER,
-    loop_alive_ts       REAL      -- heartbeat; the UI warns when this goes stale
+    loop_alive_ts       REAL,     -- heartbeat; the UI warns when this goes stale
+    lean_side           TEXT,     -- 'above' | 'below' | NULL: every zone strictly past its desired temp
+    lean_since          REAL      -- when that lean started
 );
 CREATE TABLE IF NOT EXISTS control_log (
     id      INTEGER PRIMARY KEY,
     ts      REAL NOT NULL,
-    event   TEXT NOT NULL,   -- enabled | disabled | decision | write | override | error
+    event   TEXT NOT NULL,   -- enabled | disabled | decision | write | override | error | check ...
     message TEXT NOT NULL,
     detail  TEXT             -- optional JSON
 );
 CREATE INDEX IF NOT EXISTS control_log_ts ON control_log(ts);
 """
+
+ZONE_FIELDS = ("day_lo", "day_d", "day_hi", "night_lo", "night_d", "night_hi", "day_start", "night_start")
+ZONE_DEFAULTS = {"day_lo": 69.0, "day_d": 70.0, "day_hi": 71.0, "night_lo": 69.0, "night_d": 70.0, "night_hi": 71.0,
+                 "day_start": "07:00", "night_start": "22:00"}
+MIN_WIDTH = 2.0  # the thermostat's deadband: heat and cool setpoints can't be closer
 
 
 def _j(value: Any) -> str | None:
@@ -72,49 +88,76 @@ class ControlStore:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")  # web + loop both write
         self.conn.executescript(SCHEMA)
-        # Day/night targets replaced the single `target` column; upgrade older files in
-        # place (CREATE TABLE IF NOT EXISTS won't add columns) and carry the old value over.
-        have = {r[1] for r in self.conn.execute("PRAGMA table_info(control_settings)")}
-        if "target_day" not in have:
-            with self.conn:
-                for column, spec in (("target_day", "REAL NOT NULL DEFAULT 70"), ("target_night", "REAL NOT NULL DEFAULT 70"),
-                                     ("day_start", "TEXT NOT NULL DEFAULT '07:00'"), ("night_start", "TEXT NOT NULL DEFAULT '22:00'")):
-                    self.conn.execute(f"ALTER TABLE control_settings ADD COLUMN {column} {spec}")
-                if "target" in have:
-                    self.conn.execute("UPDATE control_settings SET target_day=target, target_night=target")
+        # CREATE TABLE IF NOT EXISTS won't add columns to tables from an earlier version.
+        zone_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(control_zones)")}
+        state_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(control_state)")}
+        with self.conn:
+            if zone_cols and "day_d" not in zone_cols:
+                for period in ("day", "night"):
+                    self.conn.execute(f"ALTER TABLE control_zones ADD COLUMN {period}_d REAL NOT NULL DEFAULT 70")
+                    self.conn.execute(f"UPDATE control_zones SET {period}_d = ({period}_lo + {period}_hi) / 2")
+            for column in ("lean_side TEXT", "lean_since REAL"):
+                if column.split()[0] not in state_cols:
+                    self.conn.execute(f"ALTER TABLE control_state ADD COLUMN {column}")
         self.conn.row_factory = sqlite3.Row
         with self.conn:
             self.conn.execute(
-                "INSERT OR IGNORE INTO control_settings(id, enabled, updated_ts) VALUES (1, 0, ?)",
-                (time.time(),),
+                "INSERT OR IGNORE INTO control_settings(id, enabled, updated_ts) VALUES (1, 0, ?)", (time.time(),)
             )
             self.conn.execute("INSERT OR IGNORE INTO control_state(id) VALUES (1)")
+        # Files from before per-zone settings carried one global target (desired, ± 1
+        # tolerable) and one day/night schedule; zones without a row inherit those.
+        self.defaults = dict(ZONE_DEFAULTS)
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(control_settings)")}
+        if "target_day" in have:
+            row = self.conn.execute(
+                "SELECT target_day, target_night, day_start, night_start FROM control_settings WHERE id=1"
+            ).fetchone()
+            if row:
+                self.defaults.update(day_lo=row["target_day"] - 1, day_d=row["target_day"], day_hi=row["target_day"] + 1,
+                                     night_lo=row["target_night"] - 1, night_d=row["target_night"], night_hi=row["target_night"] + 1,
+                                     day_start=row["day_start"], night_start=row["night_start"])
 
     # -- settings (edited by the web UI) ---------------------------------
-    FIELDS = ("target_day", "target_night", "day_start", "night_start")
-
     def settings(self) -> dict:
-        row = self.conn.execute(
-            "SELECT enabled, target_day, target_night, day_start, night_start, updated_ts FROM control_settings WHERE id=1"
-        ).fetchone()
-        out = {k: row[k] for k in self.FIELDS}
-        out.update(enabled=bool(row["enabled"]), updated_ts=row["updated_ts"])
-        return out
+        row = self.conn.execute("SELECT enabled, updated_ts FROM control_settings WHERE id=1").fetchone()
+        return {"enabled": bool(row["enabled"]), "updated_ts": row["updated_ts"]}
 
-    def update_settings(self, enabled: bool | None = None, **fields: Any) -> dict:
-        """Apply the user's edits (any of FIELDS). Turning the controller on also clears
-        any override, which is how the user re-arms it after touching the thermostat."""
-        now = time.time()
+    def set_enabled(self, enabled: bool) -> dict:
+        """Turning the controller on also clears any override, which is how the user
+        re-arms it after touching the thermostat."""
         with self.conn:
-            if enabled is not None:
-                self.conn.execute("UPDATE control_settings SET enabled=?, updated_ts=? WHERE id=1", (int(enabled), now))
-                if enabled:
-                    self.conn.execute("UPDATE control_state SET override=NULL, override_ts=NULL WHERE id=1")
-            for key, value in fields.items():
-                if key not in self.FIELDS or value is None:
-                    continue
-                self.conn.execute(f"UPDATE control_settings SET {key}=?, updated_ts=? WHERE id=1", (value, now))
+            self.conn.execute("UPDATE control_settings SET enabled=?, updated_ts=? WHERE id=1",
+                              (int(enabled), time.time()))
+            if enabled:
+                self.conn.execute("UPDATE control_state SET override=NULL, override_ts=NULL WHERE id=1")
         return self.settings()
+
+    def zone(self, entity: str) -> dict:
+        row = self.conn.execute("SELECT * FROM control_zones WHERE entity=?", (entity,)).fetchone()
+        return {k: row[k] for k in ZONE_FIELDS} if row else dict(self.defaults)
+
+    def zones(self, entities: list[str]) -> dict[str, dict]:
+        return {e: self.zone(e) for e in entities}
+
+    def update_zone(self, entity: str, **fields: Any) -> dict:
+        """Change some of a zone's ZONE_FIELDS. Per period: lo <= d <= hi and hi - lo >= MIN_WIDTH."""
+        current = self.zone(entity)
+        new = {**current, **{k: v for k, v in fields.items() if k in ZONE_FIELDS and v is not None}}
+        for period in ("day", "night"):
+            lo, d, hi = new[f"{period}_lo"], new[f"{period}_d"], new[f"{period}_hi"]
+            if hi - lo < MIN_WIDTH:
+                raise ValueError(f"{period} range must be at least {MIN_WIDTH:g}° wide")
+            if not lo <= d <= hi:
+                raise ValueError(f"{period} desired temp must be within {lo:g}–{hi:g}")
+        with self.conn:
+            self.conn.execute(
+                f"INSERT OR REPLACE INTO control_zones(entity, {', '.join(ZONE_FIELDS)})"
+                f" VALUES (?{', ?' * len(ZONE_FIELDS)})",
+                (entity, *(new[k] for k in ZONE_FIELDS)),
+            )
+            self.conn.execute("UPDATE control_settings SET updated_ts=? WHERE id=1", (time.time(),))
+        return new
 
     # -- state (owned by the loop) ---------------------------------------
     def state(self) -> dict:

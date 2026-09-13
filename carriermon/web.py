@@ -32,12 +32,20 @@ UNIT_FIELDS = ["opstat", "opmode", "cfm", "blwrpm", "inducerrpm", "statpress", "
 HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
 
 
-class ControlEdit(BaseModel):
-    enabled: bool | None = None
-    target_day: float | None = Field(default=None, ge=55, le=85)
-    target_night: float | None = Field(default=None, ge=55, le=85)
+class ZoneEdit(BaseModel):
+    day_lo: float | None = Field(default=None, ge=55, le=85)
+    day_d: float | None = Field(default=None, ge=55, le=85)
+    day_hi: float | None = Field(default=None, ge=55, le=85)
+    night_lo: float | None = Field(default=None, ge=55, le=85)
+    night_d: float | None = Field(default=None, ge=55, le=85)
+    night_hi: float | None = Field(default=None, ge=55, le=85)
     day_start: str | None = Field(default=None, pattern=HHMM)
     night_start: str | None = Field(default=None, pattern=HHMM)
+
+
+class ControlEdit(BaseModel):
+    enabled: bool | None = None
+    zones: dict[str, ZoneEdit] | None = None   # entity -> partial edit
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -121,11 +129,19 @@ def create_app(settings: Settings) -> FastAPI:
             html = html.replace('<html lang="en">', '<html lang="en" data-env="dev">', 1)
         return HTMLResponse(html)
 
+    def control_zones() -> list[dict]:
+        """Enabled zones (from the readings) with their control ranges."""
+        serials = store.serials()
+        zones = store.zones(serials[0]) if serials else []
+        ranges = control.zones([z["entity"] for z in zones])
+        return [{"entity": z["entity"], "name": z["name"], **ranges[z["entity"]]} for z in zones]
+
     def control_payload() -> dict:
         state = control.state()
         stale_after = settings.control_interval * 3
         state["loop_alive"] = bool(state["loop_alive_ts"]) and time.time() - state["loop_alive_ts"] < stale_after
-        return {"settings": control.settings(), "state": state, "log": control.recent_log(300),
+        return {"settings": control.settings(), "zones": control_zones(), "state": state,
+                "log": control.recent_log(300),
                 "config": {"interval": settings.control_interval, "dev": settings.dev}}
 
     @app.get("/api/control")
@@ -134,23 +150,36 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/control")
     def control_set(edit: ControlEdit) -> dict:
-        """On/off, the day and night targets, and when day/night start. Turning it on
-        clears an override."""
-        fields = edit.model_dump(exclude_none=True)
-        if not fields:
+        """On/off, and per-zone day/night ranges and start times. Turning it on clears
+        an override."""
+        if edit.enabled is None and not edit.zones:
             raise HTTPException(400, "nothing to change")
-        before = control.settings()
-        control.update_settings(**fields)
-        if edit.enabled is not None and edit.enabled != before["enabled"]:
-            control.log("enabled" if edit.enabled else "disabled",
-                        f"switched {'on' if edit.enabled else 'off'} from the control page")
-        labels = {"target_day": "day target", "target_night": "night target",
-                  "day_start": "day starts", "night_start": "night starts"}
-        for key, label in labels.items():
-            new = fields.get(key)
-            if new is not None and new != before[key]:
-                fmt = (lambda v: f"{v:g}") if key.startswith("target") else str
-                control.log("target", f"{label} {fmt(before[key])} → {fmt(new)}")
+        if edit.enabled is not None:
+            before = control.settings()["enabled"]
+            control.set_enabled(edit.enabled)
+            if edit.enabled != before:
+                control.log("enabled" if edit.enabled else "disabled",
+                            f"switched {'on' if edit.enabled else 'off'} from the control page")
+        names = {z["entity"]: z["name"] for z in control_zones()}
+        for entity, zedit in (edit.zones or {}).items():
+            if entity not in names:
+                raise HTTPException(404, f"unknown zone {entity}")
+            fields = zedit.model_dump(exclude_none=True)
+            if not fields:
+                continue
+            before = control.zone(entity)
+            try:
+                after = control.update_zone(entity, **fields)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            for period in ("day", "night"):
+                keys = (f"{period}_lo", f"{period}_d", f"{period}_hi")
+                if tuple(before[k] for k in keys) != tuple(after[k] for k in keys):
+                    fmt = lambda z: f"{z[keys[1]]:g} ({z[keys[0]]:g}–{z[keys[2]]:g})"  # noqa: E731
+                    control.log("target", f"{names[entity]} {period}: {fmt(before)} → {fmt(after)}")
+                st = f"{period}_start"
+                if before[st] != after[st]:
+                    control.log("target", f"{names[entity]} {period} starts {before[st]} → {after[st]}")
         return control_payload()
 
     @app.get("/api/systems")

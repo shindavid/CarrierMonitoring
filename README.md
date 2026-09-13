@@ -38,21 +38,22 @@ edit to `carriermon/static/index.html` is live immediately; Python changes need 
 
 The thermostat's Auto mode follows the cooling demand of the warmest zones and can
 ignore a zone sitting under its heat setpoint. The built-in controller replaces just that
-heat-or-cool decision: every minute it looks at all zone temps and the outdoor temp,
-picks heat or cool, and holds **every zone at the same target T** (the thermostat's own
-per-zone demand then steers the dampers). T means the band [T−1, T+1]. Rules, in order:
+heat-or-cool decision. Each zone gets a **desired** temp D and a **tolerable** range
+[A, B] (A ≤ D ≤ B, at least 2 °F wide), one set for day and one for night with its own
+day/night start times, all on `/control`. In heat mode every zone's heat setpoint is its
+D; in cool mode its cool setpoint is its D (the other setpoint sits a deadband away).
+Every minute, with C(Z) the zone temps and O the outdoor temp:
 
-1. any zone outside the band → heat or cool toward it (a zone above *and* one below:
-   the larger error wins, equal → outdoor above T cools, below T heats)
-2. all zones in the band → outdoor above the band → cool, below it → heat
-3. all zones and the outdoor temp in the band → keep the current mode
+1. any zone outside its tolerable range → heat or cool toward it (a zone above *and* one
+   below: the larger error wins; equal → O above every C(Z)+1 cools, below every C(Z)−1 heats)
+2. all zones tolerable → every zone strictly above its D for 5 min → cool; every zone
+   strictly below its D for 5 min → heat. (The zone just brought to D reads exactly D and
+   blocks the opposite lean until the whole house drifts past D — that is the hysteresis.)
+3. otherwise keep the current mode
 
-There is a daytime and a nighttime T, switched by the day-start / night-start times on
-the control page. The controller writes cool T / heat T−2 in cool mode and heat T /
-cool T+2 in heat mode (the thermostat's deadband). Any change made at the thermostat or
-in the Carrier app to the mode, a setpoint or a hold **switches the controller off**;
-press ON on `/control` to re-arm it. A write that fails part-way (Carrier's API times
-out now and then) is simply retried on the next check.
+Any change made at the thermostat or in the Carrier app to the mode, a setpoint or a
+hold **switches the controller off**; press ON on `/control` to re-arm it. A write that
+fails part-way (Carrier's API times out now and then) is simply retried on the next check.
 
 Where it runs: in the production checkout the loop is hosted by `carriermon ingest`
 (the process holding the Carrier session); `CARRIERMON_CONTROL_DRY_RUN=1` makes it log
@@ -71,4 +72,4 @@ touches production's controller.
 - `GET /api/series?serial=&entity=zone:1&field=rt&start=&end=`
 - `GET /api/events?serial=&start=&end=`
 - `GET /api/dashboard?serial=&start=&end=`
-- `GET /api/control`, `POST /api/control {"enabled", "target_day", "target_night", "day_start", "night_start"}` — controller settings, state, log
+- `GET /api/control`, `POST /api/control {"enabled": bool, "zones": {"zone:1": {"day_lo", "day_hi", "night_lo", "night_hi", "day_start", "night_start"}}}` — controller settings, state, log

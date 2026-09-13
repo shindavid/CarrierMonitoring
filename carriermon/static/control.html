@@ -14,23 +14,25 @@
   header { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; padding:.6rem 1rem; border-bottom:1px solid var(--line); }
   header h1 { font-size:1.1rem; margin:0; }
   header a { color:var(--muted); text-decoration:none; }
-  main { max-width:640px; margin:0 auto; padding:.8rem; display:grid; gap:.8rem; }
+  main { max-width:680px; margin:0 auto; padding:.8rem; display:grid; gap:.8rem; }
   .card { padding:.8rem 1rem; background:var(--card); border-radius:10px; }
   .card h2 { font-size:.85rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 .5rem; }
   button { font:inherit; padding:.5rem .9rem; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
   button:disabled { opacity:.45; cursor:default; }
-  .controls { display:flex; flex-wrap:wrap; gap:1rem 2rem; align-items:center; }
   #power { min-width:7.5rem; font-weight:700; font-size:1.05rem; color:#fff; border:none; background:var(--off); }
   #power.on { background:var(--on); }
-  .targets { display:grid; gap:.5rem; }
-  .row { display:flex; align-items:center; gap:.8rem; flex-wrap:wrap; }
-  .row .lbl { min-width:9.5rem; color:var(--muted); display:flex; align-items:center; gap:.4rem; }
+  .zone { border-top:1px solid var(--line); padding:.6rem 0; }
+  .zone:first-of-type { border-top:none; padding-top:0; }
+  .zone h3 { margin:0 0 .3rem; font-size:1rem; }
+  .row { display:flex; align-items:center; gap:.4rem 1rem; flex-wrap:wrap; padding:.15rem 0; }
+  .row .lbl { min-width:8.5rem; color:var(--muted); display:flex; align-items:center; gap:.4rem; font-size:.9rem; }
   .row.active .lbl { color:var(--fg); font-weight:700; }
-  .row input[type=time] { font:inherit; padding:.2rem .3rem; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
-  .target { display:flex; align-items:center; gap:.5rem; }
-  .target button { width:2.6rem; height:2.6rem; font-size:1.3rem; padding:0; }
-  .target .val { font-size:1.9rem; font-weight:700; min-width:4rem; text-align:center; font-variant-numeric:tabular-nums; }
-  .target .val small { font-size:.9rem; font-weight:400; color:var(--muted); }
+  .row input[type=time] { font:inherit; font-size:.9rem; padding:.15rem .3rem; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  .trip { display:flex; align-items:center; gap:.3rem; }
+  .trip button { width:1.9rem; height:1.9rem; padding:0; font-size:1.05rem; line-height:1; }
+  .trip .v { min-width:2.2rem; text-align:center; font-variant-numeric:tabular-nums; }
+  .trip .v.d { font-weight:700; font-size:1.15rem; min-width:2.6rem; }
+  .trip .sep { color:var(--muted); font-size:.85rem; }
   .banner { padding:.6rem .9rem; border-radius:8px; display:none; }
   .banner.show { display:block; }
   .banner.warn { background:var(--warnbg); color:var(--warn); }
@@ -55,8 +57,6 @@
   .tag.check { opacity:.6; }
   #log li.check { color:var(--muted); }
   #status { color:var(--muted); font-size:.85rem; margin-left:auto; }
-  .badge { display:inline-block; padding:.1rem .45rem; border-radius:4px; font-weight:700; font-size:.75rem; letter-spacing:.08em; }
-  .badge.dry { background:var(--warn); color:#fff; }
 
   #devbadge { display:none; }
   :root[data-env="dev"] { --dev:#d97706; }
@@ -78,38 +78,24 @@
   <div id="override" class="banner bad"></div>
   <div id="loopwarn" class="banner warn"></div>
   <div id="drywarn" class="banner warn"></div>
+  <div id="saveerr" class="banner bad"></div>
 
   <div class="card">
-    <div class="controls">
-      <button id="power">…</button>
-      <div class="targets">
-        <div class="row" id="row_day">
-          <span class="lbl">Day from <input id="day_start" type="time"></span>
-          <div class="target">
-            <button data-f="target_day" data-d="-1" aria-label="lower day target">−</button>
-            <div class="val"><span id="target_day">–</span><small>°F</small></div>
-            <button data-f="target_day" data-d="1" aria-label="raise day target">+</button>
-          </div>
-        </div>
-        <div class="row" id="row_night">
-          <span class="lbl">Night from <input id="night_start" type="time"></span>
-          <div class="target">
-            <button data-f="target_night" data-d="-1" aria-label="lower night target">−</button>
-            <div class="val"><span id="target_night">–</span><small>°F</small></div>
-            <button data-f="target_night" data-d="1" aria-label="raise night target">+</button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <button id="power">…</button>
+  </div>
+
+  <div class="card">
+    <h2>Zones — desired temp and tolerable range</h2>
+    <div id="zonecfg"></div>
   </div>
 
   <div class="card">
     <h2>Controller</h2>
     <dl class="kv">
-      <dt>Target now</dt><dd id="targetnow">–</dd>
       <dt>Mode</dt><dd id="mode">–</dd>
       <dt>Because</dt><dd id="rule">–</dd>
       <dt>Rules ask for</dt><dd id="decision">–</dd>
+      <dt>House</dt><dd id="lean">–</dd>
       <dt>Thermostat</dt><dd id="thermo">–</dd>
       <dt>Outdoor</dt><dd id="oat">–</dd>
       <dt>Last check</dt><dd id="lasteval">–</dd>
@@ -117,9 +103,9 @@
   </div>
 
   <div class="card">
-    <h2>Zones</h2>
+    <h2>Zones now</h2>
     <table>
-      <thead><tr><th>Zone</th><th class="num">Temp</th><th class="num">vs target</th><th class="num">Heat</th><th class="num">Cool</th><th>Hold</th></tr></thead>
+      <thead><tr><th>Zone</th><th class="num">Temp</th><th class="num">Want</th><th>Status</th><th class="num">Heat sp</th><th class="num">Cool sp</th><th>Hold</th></tr></thead>
       <tbody id="zones"></tbody>
     </table>
   </div>
@@ -137,22 +123,70 @@ if (document.documentElement.dataset.env === 'dev') {
   $('#favicon').href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%23d97706'/><text x='16' y='22' font-size='18' font-family='sans-serif' font-weight='bold' fill='%23fff' text-anchor='middle'>D</text></svg>";
 }
 
-let data = null; const pending = {}, timers = {};
+let data = null;
+const pending = {};   // `${entity}|${period}` -> {lo, d, hi} being edited (debounced)
+const timers = {};
+const MIN_W = 2, T_MIN = 55, T_MAX = 85;
 const fmtT = ts => ts ? new Date(ts * 1000).toLocaleString([], {month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit'}) : '–';
 const ago = ts => { if (!ts) return '–'; const m = Math.round((Date.now()/1000 - ts) / 60); return m < 1 ? 'just now' : m < 90 ? `${m} min ago` : `${Math.round(m/60)} h ago`; };
-const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function periodNow(z) {  // mirrors period_now() in control.py
+  const t = new Date().toTimeString().slice(0, 5);
+  if (z.day_start <= z.night_start) return (z.day_start <= t && t < z.night_start) ? 'day' : 'night';
+  return (t >= z.day_start || t < z.night_start) ? 'day' : 'night';
+}
+
+// One editable row: "Day from [07:00]   [−] 69 [+]  ≤  [−] 70 [+]  ≤  [−] 71 [+]"
+function rowHtml(z, period) {
+  const key = `${z.entity}|${period}`;
+  const v = pending[key] || {lo: z[`${period}_lo`], d: z[`${period}_d`], hi: z[`${period}_hi`]};
+  const trip = (f, cls) => `<span class="trip"><button data-k="${esc(key)}" data-f="${f}" data-d="-1">−</button><span class="v ${cls}">${v[f]}</span><button data-k="${esc(key)}" data-f="${f}" data-d="1">+</button></span>`;
+  const label = period === 'day' ? 'Day from' : 'Night from';
+  return `<div class="row ${periodNow(z) === period ? 'active' : ''}">
+    <span class="lbl">${label} <input type="time" data-e="${esc(z.entity)}" data-f="${period}_start" value="${esc(z[`${period}_start`])}"></span>
+    ${trip('lo', '')}<span class="trip sep">≤</span>${trip('d', 'd')}<span class="trip sep">≤</span>${trip('hi', '')}
+  </div>`;
+}
+
+function renderZoneCfg() {
+  const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.f : null;
+  if (focused && focused.endsWith('_start')) return;   // don't yank a time picker mid-edit
+  $('#zonecfg').innerHTML = data.zones.map(z =>
+    `<div class="zone"><h3>${esc(z.name)}</h3>${rowHtml(z, 'day')}${rowHtml(z, 'night')}</div>`).join('') || '<em>no zones known yet</em>';
+  document.querySelectorAll('#zonecfg button[data-k]').forEach(b => b.onclick = () => bump(b.dataset.k, b.dataset.f, +b.dataset.d));
+  document.querySelectorAll('#zonecfg input[type=time]').forEach(i => i.onchange = e => {
+    if (e.target.value) post({zones: {[i.dataset.e]: {[i.dataset.f]: e.target.value}}});
+  });
+}
+
+// Keep lo <= d <= hi and hi - lo >= 2 while the user presses buttons: moving an edge
+// pushes the desired temp along, moving the desired temp pushes the edges along.
+function bump(key, field, delta) {
+  const [entity, period] = key.split('|');
+  const z = data.zones.find(z => z.entity === entity);
+  const v = pending[key] || {lo: z[`${period}_lo`], d: z[`${period}_d`], hi: z[`${period}_hi`]};
+  const n = {...v};
+  n[field] = Math.min(T_MAX, Math.max(T_MIN, n[field] + delta));
+  if (field === 'lo') { if (n.hi < n.lo + MIN_W) n.hi = n.lo + MIN_W; if (n.d < n.lo) n.d = n.lo; }
+  if (field === 'hi') { if (n.lo > n.hi - MIN_W) n.lo = n.hi - MIN_W; if (n.d > n.hi) n.d = n.hi; }
+  if (field === 'd')  { if (n.lo > n.d) n.lo = n.d; if (n.hi < n.d) n.hi = n.d; if (n.hi < n.lo + MIN_W) { if (delta > 0) n.hi = n.lo + MIN_W; else n.lo = n.hi - MIN_W; } }
+  if (n.hi > T_MAX || n.lo < T_MIN) return;
+  pending[key] = n;
+  renderZoneCfg();
+  clearTimeout(timers[key]);
+  timers[key] = setTimeout(async () => {
+    const send = pending[key]; delete pending[key];
+    await post({zones: {[entity]: {[`${period}_lo`]: send.lo, [`${period}_d`]: send.d, [`${period}_hi`]: send.hi}}});
+  }, 700);
+}
 
 function render() {
   const {settings, state, log, config} = data;
   const on = settings.enabled;
   $('#power').textContent = on ? 'ON' : 'OFF';
   $('#power').className = on ? 'on' : '';
-  for (const f of ['target_day', 'target_night']) if (pending[f] == null) $('#' + f).textContent = settings[f];
-  for (const f of ['day_start', 'night_start']) if (document.activeElement !== $('#' + f)) $('#' + f).value = settings[f];
-  const period = periodNow(settings);
-  $('#row_day').classList.toggle('active', period === 'day');
-  $('#row_night').classList.toggle('active', period === 'night');
-  $('#targetnow').textContent = `${period === 'day' ? settings.target_day : settings.target_night} °F (${period}), band ±1`;
+  renderZoneCfg();
 
   const ov = $('#override');
   ov.className = 'banner bad' + (state.override ? ' show' : '');
@@ -173,17 +207,17 @@ function render() {
   if (on && state.mode_since) modeEl.textContent += ` (since ${fmtT(state.mode_since)})`;
   $('#rule').textContent = on ? (state.rule || '–') : 'controller is off; the thermostat is on its own';
   $('#decision').textContent = ev.decision_rule ? `${ev.decision || 'no change'} — ${ev.decision_rule}` : '–';
+  $('#lean').textContent = ev.lean ? `every zone ${ev.lean} its desired temp for ${Math.floor((ev.lean_for || 0) / 60)} min (switches at 5)` : (ev.zones ? 'zones straddle their desired temps' : '–');
   $('#thermo').textContent = ev.thermostat_mode ? `mode ${ev.thermostat_mode}` : '–';
   $('#oat').textContent = ev.oat != null ? `${ev.oat} °F` : '–';
   $('#lasteval').textContent = state.last_eval_ts ? `${ago(state.last_eval_ts)}${ev.mismatch ? ' — mismatch: ' + ev.mismatch : ''}` : 'never';
 
-  const T = ev.target ?? (period === 'day' ? settings.target_day : settings.target_night);
   $('#zones').innerHTML = (ev.zones || []).map(z => {
-    const d = z.rt == null ? null : z.rt - T;
-    const cls = d == null ? '' : d > 1 ? 'hot' : d < -1 ? 'cold' : '';
-    return `<tr><td>${esc(z.name)}</td><td class="num">${z.rt ?? '–'}</td><td class="num ${cls}">${d == null ? '–' : (d > 0 ? '+' : '') + d}</td>
-            <td class="num">${z.htsp ?? '–'}</td><td class="num">${z.clsp ?? '–'}</td><td>${z.hold ?? '–'}</td></tr>`;
-  }).join('') || '<tr><td colspan="6">no evaluation yet</td></tr>';
+    const status = z.rt == null ? '–' : z.rt > z.hi ? `<span class="hot">above</span>` : z.rt < z.lo ? `<span class="cold">below</span>`
+                 : z.rt > z.d ? 'ok, warm side' : z.rt < z.d ? 'ok, cool side' : 'at desired';
+    return `<tr><td>${esc(z.name)}</td><td class="num">${z.rt ?? '–'}</td><td class="num">${z.d} <small>(${z.lo}–${z.hi}, ${z.period})</small></td>
+            <td>${status}</td><td class="num">${z.htsp ?? '–'}</td><td class="num">${z.clsp ?? '–'}</td><td>${z.hold ?? '–'}</td></tr>`;
+  }).join('') || '<tr><td colspan="7">no evaluation yet</td></tr>';
 
   const showChecks = $('#showchecks').checked;
   $('#log').innerHTML = log.filter(e => showChecks || e.event !== 'check').map(e =>
@@ -197,25 +231,17 @@ async function load() {
 }
 async function post(body) {
   const r = await fetch('/api/control', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
-  if (!r.ok) { $('#status').textContent = 'save failed: ' + (await r.text()); return; }
+  const se = $('#saveerr');
+  if (!r.ok) {
+    let msg = await r.text(); try { msg = JSON.parse(msg).detail; } catch (_) {}
+    se.textContent = 'Not saved: ' + (typeof msg === 'string' ? msg : JSON.stringify(msg)); se.className = 'banner bad show';
+    await load(); return;
+  }
+  se.className = 'banner bad';
   data = await r.json(); render();
 }
 
-function periodNow(s) {  // mirrors period_now() in control.py
-  const t = new Date().toTimeString().slice(0, 5);
-  if (s.day_start <= s.night_start) return (s.day_start <= t && t < s.night_start) ? 'day' : 'night';
-  return (t >= s.day_start || t < s.night_start) ? 'day' : 'night';
-}
 $('#power').onclick = () => post({enabled: !data.settings.enabled});
-function bump(field, delta) {
-  const cur = pending[field] ?? data.settings[field];
-  pending[field] = Math.min(85, Math.max(55, cur + delta));
-  $('#' + field).textContent = pending[field];
-  clearTimeout(timers[field]);
-  timers[field] = setTimeout(async () => { const v = pending[field]; pending[field] = null; await post({[field]: v}); }, 600);
-}
-document.querySelectorAll('button[data-f]').forEach(b => b.onclick = () => bump(b.dataset.f, +b.dataset.d));
-for (const f of ['day_start', 'night_start']) $('#' + f).onchange = e => { if (e.target.value) post({[f]: e.target.value}); };
 $('#showchecks').onchange = () => { if (data) render(); };
 
 load();
