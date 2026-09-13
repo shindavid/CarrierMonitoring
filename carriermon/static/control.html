@@ -28,16 +28,28 @@
   .zgrid .hdr .ico { font-size:1.1rem; margin-right:.3rem; vertical-align:-.1rem; }
   .zgrid .zname { font-weight:700; padding-top:.35rem; }
   .zgrid .sep { grid-column:1 / -1; border-top:1px solid var(--line); }
-  .cell { display:grid; grid-template-columns:4.2rem 2.6rem 2rem 2rem; gap:.25rem .3rem; align-items:center; padding:.2rem .4rem; border-radius:8px; }
+  .cell { display:grid; gap:.35rem; padding:.3rem .5rem .4rem; border-radius:8px; min-width:11rem; }
   .cell.active { background:color-mix(in srgb, var(--fg) 6%, transparent); }
-  .cell .from { grid-column:1 / -1; display:flex; align-items:center; gap:.4rem; color:var(--muted); font-size:.85rem; }
+  .cell .from { display:flex; align-items:center; gap:.4rem; color:var(--muted); font-size:.85rem; }
   .cell.active .from { color:var(--fg); }
   .cell .from input[type=time] { font:inherit; font-size:.85rem; padding:.1rem .25rem; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
-  .cell .lbl { color:var(--muted); font-size:.85rem; }
-  .cell .v { text-align:right; font-variant-numeric:tabular-nums; padding-right:.2rem; }
-  .cell .v.d { font-weight:700; font-size:1.1rem; }
-  .cell .lbl.d { color:var(--fg); }
-  .cell button { width:2rem; height:1.9rem; padding:0; font-size:1.05rem; line-height:1; }
+  /* min value | track with three markers | max value; the target value floats above its marker */
+  .sl { display:grid; grid-template-columns:2rem 1fr 2rem; align-items:end; gap:.3rem; font-variant-numeric:tabular-nums; }
+  .sl .end { font-size:.9rem; color:var(--muted); padding-bottom:.35rem; }
+  .sl .end.r { text-align:right; }
+  .slider { position:relative; height:3rem; touch-action:none; user-select:none; -webkit-user-select:none; }
+  .slider .track { position:absolute; left:0; right:0; top:2.1rem; height:4px; border-radius:2px; background:var(--line); }
+  .slider .fill { position:absolute; top:2.1rem; height:4px; border-radius:2px; background:color-mix(in srgb, var(--muted) 55%, transparent); }
+  .slider .mark { position:absolute; top:2.1rem; transform:translate(-50%, -50%); margin-top:2px; cursor:grab; }
+  .slider .mark::after { content:""; position:absolute; inset:-.7rem; }   /* fat touch target */
+  .slider .mark.lo, .slider .mark.hi { width:4px; height:16px; border-radius:2px; background:var(--muted); }
+  .slider .mark.d { width:14px; height:14px; border-radius:50%; background:var(--fg); border:2px solid var(--bg); box-shadow:0 0 0 1px var(--muted); }
+  .slider .dval { position:absolute; top:0; transform:translateX(-50%); font-weight:700; font-size:1.05rem; white-space:nowrap; }
+  .steppers { display:grid; grid-template-columns:1fr 1fr 1fr; justify-items:center; }
+  .stp { display:grid; justify-items:center; gap:.15rem; }
+  .stp .lbl { font-size:.75rem; color:var(--muted); }
+  .stp .lbl.d { color:var(--fg); font-weight:600; }
+  .stp button { width:2.3rem; height:1.75rem; padding:0; font-size:1.05rem; line-height:1; }
   @media (max-width: 560px) {
     .zgrid { grid-template-columns:1fr 1fr; }
     .zgrid .zname, .zgrid .hdr.zonehdr { grid-column:1 / -1; }
@@ -136,7 +148,7 @@ if (document.documentElement.dataset.env === 'dev') {
 let data = null;
 const pending = {};   // `${entity}|${period}` -> {lo, d, hi} being edited (debounced)
 const timers = {};
-const MIN_W = 2, T_MIN = 55, T_MAX = 85;
+const MIN_W = 2, T_MIN = 60, T_MAX = 80;   // the slider spans this; the API allows a bit more
 const fmtT = ts => ts ? new Date(ts * 1000).toLocaleString([], {month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit'}) : '–';
 const ago = ts => { if (!ts) return '–'; const m = Math.round((Date.now()/1000 - ts) / 60); return m < 1 ? 'just now' : m < 90 ? `${m} min ago` : `${Math.round(m/60)} h ago`; };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -147,51 +159,129 @@ function periodNow(z) {  // mirrors period_now() in control.py
   return (t >= z.day_start || t < z.night_start) ? 'day' : 'night';
 }
 
-// One period cell: "from [07:00]" then Max / Target / Min rows, each "label value − +".
+// One period cell: "from [07:00]", a three-marker slider (min | target | max on a
+// 60-80 track, draggable), then a stacked +/− pair for each of Min, Target, Max.
+const pct = v => `${(v - T_MIN) / (T_MAX - T_MIN) * 100}%`;
 function cellHtml(z, period) {
   const key = `${z.entity}|${period}`;
   const v = pending[key] || {lo: z[`${period}_lo`], d: z[`${period}_d`], hi: z[`${period}_hi`]};
-  const line = (f, label, cls) => `<span class="lbl ${cls}">${label}</span><span class="v ${cls}">${v[f]}</span>` +
-    `<button data-k="${esc(key)}" data-f="${f}" data-d="-1" aria-label="lower ${label}">−</button>` +
-    `<button data-k="${esc(key)}" data-f="${f}" data-d="1" aria-label="raise ${label}">+</button>`;
-  return `<div class="cell ${periodNow(z) === period ? 'active' : ''}">
+  const stp = (f, label, cls) => `<div class="stp">
+      <button data-k="${esc(key)}" data-f="${f}" data-d="1" aria-label="raise ${label}">+</button>
+      <span class="lbl ${cls}">${label}</span>
+      <button data-k="${esc(key)}" data-f="${f}" data-d="-1" aria-label="lower ${label}">−</button></div>`;
+  return `<div class="cell" data-k="${esc(key)}">
     <span class="from">from <input type="time" data-e="${esc(z.entity)}" data-f="${period}_start" value="${esc(z[`${period}_start`])}"></span>
-    ${line('hi', 'Max', '')}${line('d', 'Target', 'd')}${line('lo', 'Min', '')}
+    <div class="sl"><span class="end">${v.lo}</span>
+      <div class="slider" data-k="${esc(key)}">
+        <div class="track"></div>
+        <div class="fill" style="left:${pct(v.lo)};width:calc(${pct(v.hi)} - ${pct(v.lo)})"></div>
+        <div class="dval" style="left:${pct(v.d)}">${v.d}</div>
+        <div class="mark lo" data-f="lo" style="left:${pct(v.lo)}"></div>
+        <div class="mark hi" data-f="hi" style="left:${pct(v.hi)}"></div>
+        <div class="mark d" data-f="d" style="left:${pct(v.d)}"></div>
+      </div>
+      <span class="end r">${v.hi}</span></div>
+    <div class="steppers">${stp('lo', 'Min', '')}${stp('d', 'Target', 'd')}${stp('hi', 'Max', '')}</div>
   </div>`;
 }
 
+// The controls are built once per zone list and then updated in place, so a click,
+// a drag or a time-picker edit is never interrupted by the DOM being rebuilt under it
+// (every save response and the 30 s refresh come through here).
 function renderZoneCfg() {
-  const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.f : null;
-  if (focused && focused.endsWith('_start')) return;   // don't yank a time picker mid-edit
-  const head = `<div class="hdr zonehdr">Zone</div><div class="hdr"><span class="ico">☀</span>Day</div><div class="hdr"><span class="ico">☾</span>Night</div>`;
-  const rows = data.zones.map((z, i) =>
-    `${i ? '<div class="sep"></div>' : ''}<div class="zname">${esc(z.name)}</div>${cellHtml(z, 'day')}${cellHtml(z, 'night')}`).join('');
-  $('#zonecfg').innerHTML = data.zones.length ? `<div class="zgrid">${head}${rows}</div>` : '<em>no zones known yet</em>';
-  document.querySelectorAll('#zonecfg button[data-k]').forEach(b => b.onclick = () => bump(b.dataset.k, b.dataset.f, +b.dataset.d));
-  document.querySelectorAll('#zonecfg input[type=time]').forEach(i => i.onchange = e => {
-    if (e.target.value) post({zones: {[i.dataset.e]: {[i.dataset.f]: e.target.value}}});
-  });
+  const sig = data.zones.map(z => z.entity + ':' + z.name).join(',');
+  let grid = $('#zonecfg .zgrid');
+  if (!grid || grid.dataset.sig !== sig) {
+    const head = `<div class="hdr zonehdr">Zone</div><div class="hdr"><span class="ico">☀</span>Day</div><div class="hdr"><span class="ico">☾</span>Night</div>`;
+    const rows = data.zones.map((z, i) =>
+      `${i ? '<div class="sep"></div>' : ''}<div class="zname">${esc(z.name)}</div>${cellHtml(z, 'day')}${cellHtml(z, 'night')}`).join('');
+    $('#zonecfg').innerHTML = data.zones.length ? `<div class="zgrid">${head}${rows}</div>` : '<em>no zones known yet</em>';
+    grid = $('#zonecfg .zgrid');
+    if (!grid) return;
+    grid.dataset.sig = sig;
+    grid.querySelectorAll('button[data-k]').forEach(b => b.onclick = () => bump(b.dataset.k, b.dataset.f, +b.dataset.d));
+    grid.querySelectorAll('.slider .mark').forEach(m => m.onpointerdown = startDrag);
+    grid.querySelectorAll('input[type=time]').forEach(i => i.onchange = e => {
+      if (e.target.value) post({zones: {[i.dataset.e]: {[i.dataset.f]: e.target.value}}});
+    });
+  }
+  for (const z of data.zones) for (const period of ['day', 'night']) paintCell(z, period);
+}
+function paintCell(z, period) {
+  const key = `${z.entity}|${period}`;
+  const cell = document.querySelector(`#zonecfg .cell[data-k="${CSS.escape(key)}"]`);
+  if (!cell) return;
+  cell.classList.toggle('active', periodNow(z) === period);
+  const inp = cell.querySelector('input[type=time]');
+  if (document.activeElement !== inp && inp.value !== z[`${period}_start`]) inp.value = z[`${period}_start`];
+  paintSlider(key, current(key));
 }
 
 // Keep lo <= d <= hi and hi - lo >= 2 while the user presses buttons: moving an edge
 // pushes the desired temp along, moving the desired temp pushes the edges along.
-function bump(key, field, delta) {
+function current(key) {
   const [entity, period] = key.split('|');
   const z = data.zones.find(z => z.entity === entity);
-  const v = pending[key] || {lo: z[`${period}_lo`], d: z[`${period}_d`], hi: z[`${period}_hi`]};
+  return pending[key] || {lo: z[`${period}_lo`], d: z[`${period}_d`], hi: z[`${period}_hi`]};
+}
+function bump(key, field, delta) { setVal(key, field, current(key)[field] + delta); }
+function setVal(key, field, value) {
+  const [entity, period] = key.split('|');
+  const v = current(key);
   const n = {...v};
-  n[field] = Math.min(T_MAX, Math.max(T_MIN, n[field] + delta));
+  n[field] = Math.min(T_MAX, Math.max(T_MIN, Math.round(value)));
+  if (n[field] === v[field]) return;
+  const delta = n[field] - v[field];
+  // Pushing the target past an edge carries that edge along (the other edge stays);
+  // moving an edge carries the target along and keeps the range at least MIN_W wide.
+  if (field === 'd')  { if (n.d > n.hi) n.hi = n.d; if (n.d < n.lo) n.lo = n.d; }
   if (field === 'lo') { if (n.hi < n.lo + MIN_W) n.hi = n.lo + MIN_W; if (n.d < n.lo) n.d = n.lo; }
   if (field === 'hi') { if (n.lo > n.hi - MIN_W) n.lo = n.hi - MIN_W; if (n.d > n.hi) n.d = n.hi; }
-  if (field === 'd')  { if (n.lo > n.d) n.lo = n.d; if (n.hi < n.d) n.hi = n.d; if (n.hi < n.lo + MIN_W) { if (delta > 0) n.hi = n.lo + MIN_W; else n.lo = n.hi - MIN_W; } }
   if (n.hi > T_MAX || n.lo < T_MIN) return;
+  if (n.lo === v.lo && n.d === v.d && n.hi === v.hi) return;
   pending[key] = n;
-  renderZoneCfg();
+  applyLocal(key, n);   // optimistic: the page shows the edit even while a save is in flight
+  paintSlider(key, n);
   clearTimeout(timers[key]);
   timers[key] = setTimeout(async () => {
-    const send = pending[key]; delete pending[key];
+    const send = pending[key];
     await post({zones: {[entity]: {[`${period}_lo`]: send.lo, [`${period}_d`]: send.d, [`${period}_hi`]: send.hi}}});
+    if (pending[key] === send) { delete pending[key]; renderZoneCfg(); }   // no newer edit since
   }, 700);
+}
+function applyLocal(key, n) {
+  const [entity, period] = key.split('|');
+  const z = data.zones.find(z => z.entity === entity);
+  if (z) { z[`${period}_lo`] = n.lo; z[`${period}_d`] = n.d; z[`${period}_hi`] = n.hi; }
+}
+function overlayPending() {   // after any fetch: edits still in flight win over what the server sent
+  for (const key of Object.keys(pending)) applyLocal(key, pending[key]);
+}
+
+// Dragging a marker: map pointer x to a whole degree on the 60-80 track and feed it
+// through the same constraint logic as the buttons. While dragging only the slider is
+// repainted (a full re-render would drop the pointer capture).
+let dragging = null;
+function startDrag(e) {
+  const mark = e.currentTarget, slider = mark.parentElement;
+  dragging = {key: slider.dataset.k, field: mark.dataset.f, slider};
+  mark.setPointerCapture(e.pointerId);
+  mark.onpointermove = ev => {
+    const r = slider.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+    setVal(dragging.key, dragging.field, T_MIN + frac * (T_MAX - T_MIN));
+  };
+  mark.onpointerup = mark.onpointercancel = () => { mark.onpointermove = null; dragging = null; };
+  e.preventDefault();
+}
+function paintSlider(key, v) {
+  const slider = document.querySelector(`#zonecfg .slider[data-k="${CSS.escape(key)}"]`);
+  if (!slider) return;
+  slider.querySelector('.fill').style.left = pct(v.lo);
+  slider.querySelector('.fill').style.width = `calc(${pct(v.hi)} - ${pct(v.lo)})`;
+  for (const f of ['lo', 'd', 'hi']) slider.querySelector(`.mark.${f}`).style.left = pct(v[f]);
+  const dv = slider.querySelector('.dval'); dv.style.left = pct(v.d); dv.textContent = v.d;
+  const ends = slider.parentElement.querySelectorAll('.end'); ends[0].textContent = v.lo; ends[1].textContent = v.hi;
 }
 
 function render() {
@@ -239,7 +329,7 @@ function render() {
 }
 
 async function load() {
-  try { data = await (await fetch('/api/control')).json(); render(); }
+  try { data = await (await fetch('/api/control')).json(); overlayPending(); render(); }
   catch (e) { $('#status').textContent = 'load failed: ' + e; }
 }
 async function post(body) {
@@ -248,10 +338,11 @@ async function post(body) {
   if (!r.ok) {
     let msg = await r.text(); try { msg = JSON.parse(msg).detail; } catch (_) {}
     se.textContent = 'Not saved: ' + (typeof msg === 'string' ? msg : JSON.stringify(msg)); se.className = 'banner bad show';
+    for (const k of Object.keys(pending)) delete pending[k];   // drop the rejected edit, show the server's truth
     await load(); return;
   }
   se.className = 'banner bad';
-  data = await r.json(); render();
+  data = await r.json(); overlayPending(); render();
 }
 
 $('#power').onclick = () => post({enabled: !data.settings.enabled});
