@@ -59,10 +59,19 @@
   .stp .lbl { font-size:.75rem; color:var(--muted); }
   .stp .lbl.d { color:var(--fg); font-weight:600; }
   .stp button { width:2.3rem; height:1.75rem; padding:0; font-size:1.05rem; line-height:1; }
+  .cell .pname { display:none; font-weight:600; color:var(--fg); margin-right:.3rem; }
+  .cell .pname .ico { font-size:1rem; margin-right:.2rem; }
+  /* Phones: one column. Zone name + temp on a line, then the day cell, then the night
+     cell, each full width; the period label moves into the cell's "from" line. */
   @media (max-width: 560px) {
-    .zgrid { grid-template-columns:1fr 1fr; }
-    .zgrid .zname, .zgrid .hdr.zonehdr { grid-column:1 / -1; }
-    .zgrid .hdr.zonehdr { display:none; }
+    main { padding:.5rem; }
+    .card { padding:.6rem .7rem; }
+    .zgrid { grid-template-columns:1fr; gap:.3rem; }
+    .zgrid .hdr { display:none; }
+    .zgrid .zname { display:flex; align-items:baseline; gap:.6rem; padding-top:.2rem; }
+    .zgrid .ztemp { font-size:1.2rem; }
+    .cell { min-width:0; }
+    .cell .pname { display:inline; }
   }
   .banner { padding:.6rem .9rem; border-radius:8px; display:none; }
   .banner.show { display:block; }
@@ -166,7 +175,7 @@ function cellHtml(z, period) {
       <span class="lbl ${cls}">${label}</span>
       <button data-k="${esc(key)}" data-f="${f}" data-d="-1" aria-label="lower ${label}">−</button></div>`;
   return `<div class="cell" data-k="${esc(key)}">
-    <span class="from">from <input type="time" data-e="${esc(z.entity)}" data-f="${period}_start" value="${esc(z[`${period}_start`])}"></span>
+    <span class="from"><span class="pname"><span class="ico">${period === 'day' ? '☀' : '☾'}</span>${period === 'day' ? 'Day' : 'Night'}</span>from <input type="time" data-e="${esc(z.entity)}" data-f="${period}_start" value="${esc(z[`${period}_start`])}"></span>
     <div class="sl"><span class="end">${v.lo}</span>
       <div class="slider range" data-k="${esc(key)}">
         <div class="track"></div>
