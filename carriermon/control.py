@@ -327,7 +327,16 @@ class ControlLoop:
                 and expected["zones"] == desired["zones"]:
             pass  # nothing to do
         else:
-            writes = await self.applier.apply(serial, desired, expected)
+            try:
+                writes = await self.applier.apply(serial, desired, expected)
+            except Exception as exc:  # noqa: BLE001 - Carrier's API times out now and then
+                # Some of the batch may have landed, so what the thermostat holds is now
+                # unknown. Forget our claim on it (no override check against stale
+                # expectations) and rewrite everything next tick.
+                self.control.set_state(expected=None, written_ts=now, mode=mode, rule=rule)
+                self.control.log("error", f"write failed, will retry next check: {type(exc).__name__}: {exc}")
+                log.warning("control write failed: %s", exc)
+                return
             for w in writes:
                 self.control.log("write", w)
             mode_changed = expected is None or expected["mode"] != mode
