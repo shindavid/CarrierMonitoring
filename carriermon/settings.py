@@ -35,6 +35,8 @@ class Settings:
     control_db_path: Path
     control_interval: int
     control_dry_run: bool
+    home_networks: tuple[str, ...]   # CIDRs/IPs that count as "home" besides our own public IP
+    public_ip_url: str | None        # where to learn our public IP (None = don't)
 
     def require_carrier_login(self) -> None:
         if not self.username or not self.password:
@@ -57,4 +59,6 @@ class Settings:
             control_db_path=Path(os.environ.get("CARRIERMON_CONTROL_DB", "data/control.sqlite")),
             control_interval=int(os.environ.get("CARRIERMON_CONTROL_INTERVAL", "60")),
             control_dry_run=os.environ.get("CARRIERMON_CONTROL_DRY_RUN", "") == "1",
+            home_networks=tuple(n.strip() for n in os.environ.get("CARRIERMON_HOME_NETWORKS", "").split(",") if n.strip()),
+            public_ip_url=os.environ.get("CARRIERMON_PUBLIC_IP_URL", "https://1.1.1.1/cdn-cgi/trace") or None,
         )

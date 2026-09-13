@@ -117,3 +117,98 @@ class TestAuth:
         r = authed.post("/logout")
         assert r.status_code == 303
         assert authed.get("/api/control").status_code == 401
+
+
+@pytest.fixture
+def accounts(tmp_path: Path) -> TestClient:
+    """Two logins from the users table, no .env pair, a listed home network, no public-IP lookup."""
+    populate_readings(tmp_path / "readings.sqlite")
+    cs = ControlStore(tmp_path / "control.sqlite")
+    cs.add_user("david", "pw-admin", "admin")
+    cs.add_user("nanny", "pw-user", "user")
+    app = create_app(make_settings(tmp_path, dev=False, home_networks=("93.184.216.0/24",)))
+    return TestClient(app, follow_redirects=False)
+
+
+def login(client: TestClient, user: str, password: str) -> None:
+    r = client.post("/login", data={"username": user, "password": password})
+    assert r.status_code == 303, r.text
+
+
+class TestAccounts:
+    def test_users_table_gates_the_site(self, accounts: TestClient):
+        assert accounts.get("/control").status_code == 303
+        assert accounts.get("/api/control").status_code == 401
+
+    def test_wrong_password(self, accounts: TestClient):
+        r = accounts.post("/login", data={"username": "nanny", "password": "nope"})
+        assert r.status_code == 200 and "Incorrect" in r.text
+
+    def test_me_at_home(self, accounts: TestClient):
+        login(accounts, "nanny", "pw-user")
+        me = accounts.get("/api/control", headers={"CF-Connecting-IP": "192.168.4.4"}).json()["me"]
+        assert me == {"user": "nanny", "role": "user", "ip": "192.168.4.4", "at_home": True, "can_edit": True}
+
+    def test_user_away_from_home_is_locked_out_entirely(self, accounts: TestClient):
+        login(accounts, "nanny", "pw-user")
+        away = {"CF-Connecting-IP": "8.8.8.8"}
+        r = accounts.get("/api/control", headers=away)
+        assert r.status_code == 403 and "home network" in r.json()["detail"]
+        r = accounts.post("/api/control", json={"enabled": True}, headers=away)
+        assert r.status_code == 403
+        r = accounts.get("/control", headers=away)
+        assert r.status_code == 403 and "home wifi" in r.text and "<form" in r.text
+        assert accounts.get("/", headers=away).status_code == 403
+        # the session survives: back at home, straight in
+        assert accounts.get("/api/control", headers={"CF-Connecting-IP": "10.0.0.9"}).status_code == 200
+        assert accounts.get("/api/control", headers={"CF-Connecting-IP": "10.0.0.9"}).json()["settings"]["enabled"] is False
+
+    @pytest.mark.parametrize("ip", ["93.184.216.7", "192.168.1.20", "10.0.0.5", "127.0.0.1"])
+    def test_user_at_home_can_edit_and_is_logged(self, accounts: TestClient, ip: str, tmp_path: Path):
+        login(accounts, "nanny", "pw-user")
+        r = accounts.post("/api/control", json={"enabled": True}, headers={"CF-Connecting-IP": ip})
+        assert r.status_code == 200 and r.json()["me"]["at_home"] is True
+        assert accounts.get("/control", headers={"CF-Connecting-IP": ip}).status_code == 200
+        entry = ControlStore(tmp_path / "control.sqlite").recent_log(1)[0]
+        assert entry["event"] == "enabled" and entry["user"] == "nanny"
+
+    def test_admin_edits_from_anywhere(self, accounts: TestClient, tmp_path: Path):
+        login(accounts, "david", "pw-admin")
+        r = accounts.post("/api/control", json={"zones": {"zone:1": {"day_d": 71}}}, headers={"CF-Connecting-IP": "8.8.8.8"})
+        assert r.status_code == 200 and r.json()["me"]["can_edit"] is True and r.json()["me"]["at_home"] is False
+        entry = ControlStore(tmp_path / "control.sqlite").recent_log(1)[0]
+        assert entry["message"].startswith("Upstairs day:") and entry["user"] == "david"
+
+    def test_no_forwarding_header_uses_peer(self, accounts: TestClient):
+        login(accounts, "david", "pw-admin")
+        me = accounts.get("/api/control").json()["me"]
+        assert me["ip"] == "testclient" and me["at_home"] is False   # not an address at all -> not home
+        accounts.cookies.clear()
+        login(accounts, "nanny", "pw-user")
+        assert accounts.get("/api/control").status_code == 403
+
+    def test_env_admin_and_table_users_coexist(self, tmp_path: Path):
+        populate_readings(tmp_path / "readings.sqlite")
+        ControlStore(tmp_path / "control.sqlite").add_user("wife", "pw", "user")
+        app = create_app(make_settings(tmp_path, dev=False, auth_user="u", auth_password="p"))
+        c = TestClient(app, follow_redirects=False)
+        login(c, "u", "p")
+        assert c.get("/api/control").json()["me"]["role"] == "admin"
+        c.cookies.clear()
+        login(c, "wife", "pw")
+        assert c.get("/api/control").status_code == 403                       # a user, not at home
+        assert c.get("/api/control", headers={"CF-Connecting-IP": "192.168.1.2"}).json()["me"]["role"] == "user"
+
+    def test_session_survives_app_restart(self, tmp_path: Path):
+        populate_readings(tmp_path / "readings.sqlite")
+        ControlStore(tmp_path / "control.sqlite").add_user("d", "pw", "admin")
+        s = make_settings(tmp_path, dev=False)
+        c1 = TestClient(create_app(s), follow_redirects=False)
+        login(c1, "d", "pw")
+        cookie = c1.cookies["carriermon_session"]
+        c2 = TestClient(create_app(s), follow_redirects=False)   # same secret file on disk
+        assert c2.get("/api/control", cookies={"carriermon_session": cookie}).status_code == 200
+
+    def test_open_server_is_admin_and_local(self, client: TestClient):
+        me = client.get("/api/control").json()["me"]
+        assert me["user"] is None and me["role"] == "admin" and me["can_edit"] is True

@@ -88,6 +88,9 @@
   td.num { text-align:right; }
   .hot { color:var(--heat); } .cold { color:var(--cool); }
   #status { color:var(--muted); font-size:.85rem; margin-left:auto; }
+  #whoami { display:flex; align-items:center; gap:.4rem; font-size:.85rem; color:var(--muted); }
+  #whoami button { padding:.15rem .5rem; font-size:.8rem; }
+  body.readonly #power, body.readonly #zonecfg { pointer-events:none; opacity:.55; }
 
   #devbadge { display:none; }
   :root[data-env="dev"] { --dev:#d97706; }
@@ -104,12 +107,14 @@
   <h1>Carrier Control</h1>
   <a href="/">← Dashboard</a>
   <span id="status"></span>
+  <form id="whoami" method="post" action="/logout" hidden><span id="who"></span> <button type="submit">log out</button></form>
 </header>
 <main>
   <div id="override" class="banner bad"></div>
   <div id="loopwarn" class="banner warn"></div>
   <div id="drywarn" class="banner warn"></div>
   <div id="saveerr" class="banner bad"></div>
+  <div id="ro" class="banner warn"></div>
 
   <div class="card">
     <button id="power">…</button>
@@ -306,6 +311,13 @@ function paintSlider(key, v) {
 
 function render() {
   const {settings, state, config} = data;
+  const me = data.me || {can_edit: true};
+  document.body.classList.toggle('readonly', !me.can_edit);
+  const ro = $('#ro');
+  ro.className = 'banner warn' + (me.can_edit ? '' : ' show');
+  ro.textContent = me.can_edit ? '' : 'Viewing only: you are away from the home network. Changes need the home wifi or an admin login.';
+  $('#whoami').hidden = !me.user;
+  $('#who').textContent = me.user ? `${me.user}${me.role === 'admin' ? ' (admin)' : ''}` : '';
   const on = settings.enabled;
   $('#power').textContent = on ? 'ON' : 'OFF';
   $('#power').className = on ? 'on' : '';
@@ -346,8 +358,12 @@ function render() {
 }
 
 async function load() {
-  try { data = await (await fetch('/api/control')).json(); overlayPending(); render(); }
-  catch (e) { $('#status').textContent = 'load failed: ' + e; }
+  try {
+    const r = await fetch('/api/control');
+    if (r.status === 401) { location.href = '/login'; return; }
+    if (r.status === 403) { const ro = $('#ro'); ro.className = 'banner warn show'; ro.textContent = (await r.json()).detail; document.body.classList.add('readonly'); return; }
+    data = await r.json(); overlayPending(); render();
+  } catch (e) { $('#status').textContent = 'load failed: ' + e; }
 }
 async function post(body) {
   const r = await fetch('/api/control', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});

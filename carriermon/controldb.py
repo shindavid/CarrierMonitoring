@@ -11,7 +11,8 @@ Tables
 - control_zones:    one row per zone — its day/night desired temp and tolerable range,
                     and when day/night start. Zones without a row get the defaults.
 - control_state:    one row — what the loop is doing / last wrote / why.
-- control_log:      decisions, writes, overrides, errors (newest first in the UI).
+- control_log:      decisions, writes, overrides, errors; `user` names who made a change.
+- users:            web logins (PBKDF2 hash + salt) with a role, see auth.py.
 """
 
 from __future__ import annotations
@@ -62,9 +63,17 @@ CREATE TABLE IF NOT EXISTS control_log (
     ts      REAL NOT NULL,
     event   TEXT NOT NULL,   -- enabled | disabled | decision | write | override | error | check ...
     message TEXT NOT NULL,
-    detail  TEXT             -- optional JSON
+    detail  TEXT,            -- optional JSON
+    user    TEXT             -- who made the change (web login), NULL for the loop's own entries
 );
 CREATE INDEX IF NOT EXISTS control_log_ts ON control_log(ts);
+CREATE TABLE IF NOT EXISTS users (
+    name        TEXT PRIMARY KEY,
+    role        TEXT NOT NULL,     -- admin | user
+    pw_hash     TEXT NOT NULL,
+    salt        TEXT NOT NULL,
+    created_ts  REAL NOT NULL
+);
 """
 
 ZONE_FIELDS = ("day_lo", "day_d", "day_hi", "night_lo", "night_d", "night_hi", "day_start", "night_start")
@@ -91,7 +100,10 @@ class ControlStore:
         # CREATE TABLE IF NOT EXISTS won't add columns to tables from an earlier version.
         zone_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(control_zones)")}
         state_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(control_state)")}
+        log_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(control_log)")}
         with self.conn:
+            if "user" not in log_cols:
+                self.conn.execute("ALTER TABLE control_log ADD COLUMN user TEXT")
             if zone_cols and "day_d" not in zone_cols:
                 for period in ("day", "night"):
                     self.conn.execute(f"ALTER TABLE control_zones ADD COLUMN {period}_d REAL NOT NULL DEFAULT 70")
@@ -191,18 +203,60 @@ class ControlStore:
             )
 
     # -- log -------------------------------------------------------------
-    def log(self, event: str, message: str, detail: Any = None) -> None:
+    def log(self, event: str, message: str, detail: Any = None, user: str | None = None) -> None:
         with self.conn:
             self.conn.execute(
-                "INSERT INTO control_log(ts, event, message, detail) VALUES (?,?,?,?)",
-                (time.time(), event, message, _j(detail)),
+                "INSERT INTO control_log(ts, event, message, detail, user) VALUES (?,?,?,?,?)",
+                (time.time(), event, message, _j(detail), user),
             )
 
     def recent_log(self, limit: int = 100) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT ts, event, message, detail FROM control_log ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT ts, event, message, detail, user FROM control_log ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [{**dict(r), "detail": _unj(r["detail"])} for r in rows]
+
+    # -- users (web logins) ----------------------------------------------
+    def has_users(self) -> bool:
+        return self.conn.execute("SELECT 1 FROM users LIMIT 1").fetchone() is not None
+
+    def list_users(self) -> list[dict]:
+        return [dict(r) for r in self.conn.execute("SELECT name, role, created_ts FROM users ORDER BY name")]
+
+    def add_user(self, name: str, password: str, role: str) -> None:
+        from .auth import ROLES, USERNAME_RE, hash_password
+        if not USERNAME_RE.match(name or ""):
+            raise ValueError("user name: 1-32 letters, digits, '.', '_' or '-'")
+        if role not in ROLES:
+            raise ValueError(f"role must be one of {', '.join(ROLES)}")
+        if not password:
+            raise ValueError("password must not be empty")
+        pw_hash, salt = hash_password(password)
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO users(name, role, pw_hash, salt, created_ts) VALUES (?,?,?,?,?)",
+                              (name, role, pw_hash, salt, time.time()))
+
+    def set_password(self, name: str, password: str) -> None:
+        from .auth import hash_password
+        if not password:
+            raise ValueError("password must not be empty")
+        pw_hash, salt = hash_password(password)
+        with self.conn:
+            if self.conn.execute("UPDATE users SET pw_hash=?, salt=? WHERE name=?", (pw_hash, salt, name)).rowcount == 0:
+                raise KeyError(name)
+
+    def remove_user(self, name: str) -> None:
+        with self.conn:
+            if self.conn.execute("DELETE FROM users WHERE name=?", (name,)).rowcount == 0:
+                raise KeyError(name)
+
+    def verify_user(self, name: str, password: str) -> str | None:
+        """The user's role if the password is right, else None."""
+        from .auth import check_password
+        row = self.conn.execute("SELECT role, pw_hash, salt FROM users WHERE name=?", (name,)).fetchone()
+        if row is None or not check_password(password, row["pw_hash"], row["salt"]):
+            return None
+        return row["role"]
 
     def prune_log(self, keep_days: float = 30) -> None:
         with self.conn:

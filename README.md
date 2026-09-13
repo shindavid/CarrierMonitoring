@@ -62,6 +62,17 @@ alongside `./test_dev.sh`, and use the dev dashboard's `/control` page. Settings
 and the decision log live in `data/control.sqlite` of *that* checkout, so a dev run never
 touches production's controller.
 
+### Logins and roles
+
+`CARRIERMON_AUTH_USER` / `CARRIERMON_AUTH_PASSWORD` in `.env` is an admin login. Add more
+with `.venv/bin/carriermon user add NAME [--role admin|user]` (`list`, `passwd`, `remove`
+too); they are stored hashed in the control database. **Admins** can change controller
+settings from anywhere. **Users** can only use the site (view or change) from the home
+network — every request's address (via the Cloudflare tunnel's `CF-Connecting-IP`) must
+equal the server's own public IP, be a LAN address, or be in `CARRIERMON_HOME_NETWORKS`;
+away from home they get a "log in as an admin or connect to the home wifi" page.
+Every change made through the control page is logged with the login that made it.
+
 ### What gets stored (`data/carriermon.sqlite`)
 - `raw_messages` — every payload from Carrier, verbatim.
 - `readings` — every field of status + config, flattened, written when it **changes**

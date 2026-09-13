@@ -18,6 +18,19 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("ingest", help="run the cloud logger (websocket + poll) forever")
     sub.add_parser("control", help="run the heat/cool controller loop standalone, dry-run (dev checkouts; "
                                    "in production the loop runs inside ingest)")
+    user = sub.add_parser("user", help="manage web logins (stored in this checkout's control database)")
+    usub = user.add_subparsers(dest="ucmd", required=True)
+    add = usub.add_parser("add", help="create or replace a login")
+    add.add_argument("name")
+    add.add_argument("--role", choices=("admin", "user"), default="user",
+                     help="admin: change from anywhere; user: change only from the home network (default)")
+    add.add_argument("--password", help="prompted if omitted")
+    usub.add_parser("list", help="show logins")
+    rm = usub.add_parser("remove", help="delete a login")
+    rm.add_argument("name")
+    pw = usub.add_parser("passwd", help="change a login's password")
+    pw.add_argument("name")
+    pw.add_argument("--password", help="prompted if omitted")
     web = sub.add_parser("web", help="serve the dashboard")
     web.add_argument("--host", default=None, help="override CARRIERMON_HOST")
     web.add_argument("--port", type=int, default=None, help="override CARRIERMON_PORT")
@@ -45,6 +58,30 @@ def main(argv: list[str] | None = None) -> None:
         from .cloud import CloudIngest
         from .db import Store
         asyncio.run(CloudIngest(settings, Store(settings.db_path)).run())
+    elif args.cmd == "user":
+        import datetime
+        import getpass
+        from .controldb import ControlStore
+        cs = ControlStore(settings.control_db_path)
+        try:
+            if args.ucmd == "list":
+                for u in cs.list_users():
+                    print(f"{u['name']:20s} {u['role']:6s} added {datetime.date.fromtimestamp(u['created_ts'])}")
+                if settings.auth_user:
+                    print(f"{settings.auth_user:20s} admin  (from .env)")
+            elif args.ucmd == "add":
+                cs.add_user(args.name, args.password or getpass.getpass(f"password for {args.name}: "), args.role)
+                print(f"{args.role} {args.name} saved")
+            elif args.ucmd == "passwd":
+                cs.set_password(args.name, args.password or getpass.getpass(f"new password for {args.name}: "))
+                print("password changed")
+            elif args.ucmd == "remove":
+                cs.remove_user(args.name)
+                print(f"{args.name} removed")
+        except KeyError as exc:
+            raise SystemExit(f"no such user: {exc.args[0]}")
+        except ValueError as exc:
+            raise SystemExit(str(exc))
     elif args.cmd == "control":
         from .control import run_standalone
         asyncio.run(run_standalone(settings))

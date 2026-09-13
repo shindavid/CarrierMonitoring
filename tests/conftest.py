@@ -21,6 +21,7 @@ def make_settings(tmp_path: Path, **overrides: Any) -> Settings:
         db_path=tmp_path / "readings.sqlite", poll_seconds=300, retention_days=7,
         web_host="127.0.0.1", web_port=0, auth_user=None, auth_password=None,
         control_db_path=tmp_path / "control.sqlite", control_interval=60, control_dry_run=True,
+        home_networks=(), public_ip_url=None,   # no network lookups in tests
     )
     base.update(overrides)
     return Settings(**base)

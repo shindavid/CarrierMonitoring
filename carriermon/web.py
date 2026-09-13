@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import secrets
 import time
 import urllib.parse
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from .auth import SESSION_TTL, HomeDetector, client_ip, load_secret, sign_session, verify_session
 from .controldb import ControlStore
 from .db import Store
 from .settings import Settings
@@ -55,59 +54,85 @@ def create_app(settings: Settings) -> FastAPI:
     control = ControlStore(settings.control_db_path)
     app = FastAPI(title="carriermon")
 
-    if settings.auth_user and settings.auth_password:
-        # Form-based login with a signed session cookie, rather than HTTP Basic Auth: the
-        # browser-native Basic Auth popup isn't recognized by password managers (1Password),
-        # whereas a real <form> login page is filled and saved like any other site login.
-        expected = (settings.auth_user, settings.auth_password)
-        COOKIE = "carriermon_session"
-        # Signing key is derived from the credentials, so no extra secret to configure and
-        # every stored cookie is invalidated automatically whenever the password changes.
-        key = hashlib.sha256(f"{settings.auth_user}:{settings.auth_password}".encode()).digest()
-        token = hmac.new(key, b"carriermon-session", hashlib.sha256).hexdigest()
+    # -- logins ------------------------------------------------------------------
+    # Form login with a signed session cookie (password managers fill a real <form>;
+    # the browser's Basic Auth popup they don't). Accounts come from the users table
+    # (`carriermon user add`), plus the CARRIERMON_AUTH_USER/PASSWORD pair from .env as
+    # an admin so an existing deployment keeps working. With neither, the server is
+    # open (local dev use).
+    secret = load_secret(settings.control_db_path.parent / "secret.key")
+    home = HomeDetector(settings.home_networks, settings.public_ip_url)
+    env_admin = (settings.auth_user, settings.auth_password) if settings.auth_user and settings.auth_password else None
+    COOKIE = "carriermon_session"
 
-        def authed(request: Request) -> bool:
-            return hmac.compare_digest(request.cookies.get(COOKIE, ""), token)
+    def auth_enabled() -> bool:
+        return env_admin is not None or control.has_users()
 
-        def login_page(error: str = "") -> HTMLResponse:
-            html = (STATIC / "login.html").read_text().replace("{error}", error)
-            if settings.dev:
-                html = html.replace('<html lang="en">', '<html lang="en" data-env="dev">', 1)
-            return HTMLResponse(html)
+    def login_page(error: str = "") -> HTMLResponse:
+        html = (STATIC / "login.html").read_text().replace("{error}", error)
+        if settings.dev:
+            html = html.replace('<html lang="en">', '<html lang="en" data-env="dev">', 1)
+        return HTMLResponse(html)
 
-        @app.get("/login")
-        def login_form(request: Request) -> Response:
-            if authed(request):
-                return RedirectResponse("/", status_code=303)
-            return login_page()
+    @app.get("/login")
+    def login_form(request: Request) -> Response:
+        if verify_session(secret, request.cookies.get(COOKIE, "")):
+            return RedirectResponse("/", status_code=303)
+        return login_page()
 
-        @app.post("/login")
-        async def login_submit(request: Request) -> Response:
-            body = urllib.parse.parse_qs((await request.body()).decode())
-            user = body.get("username", [""])[0]
-            password = body.get("password", [""])[0]
-            ok = secrets.compare_digest(user, expected[0]) and secrets.compare_digest(password, expected[1])
-            if not ok:
-                return login_page("Incorrect username or password.")
-            resp = RedirectResponse("/", status_code=303)
-            # TLS is terminated by the Cloudflare tunnel, so the app only ever sees plain HTTP;
-            # marking the cookie Secure here would stop the tunnel from forwarding it back.
-            resp.set_cookie(COOKIE, token, max_age=30 * 86400, httponly=True, samesite="lax")
-            return resp
+    @app.post("/login")
+    async def login_submit(request: Request) -> Response:
+        body = urllib.parse.parse_qs((await request.body()).decode())
+        user = body.get("username", [""])[0]
+        password = body.get("password", [""])[0]
+        role = None
+        if env_admin and secrets.compare_digest(user, env_admin[0]) and secrets.compare_digest(password, env_admin[1]):
+            role = "admin"
+        else:
+            role = control.verify_user(user, password)
+        if role is None:
+            return login_page("Incorrect username or password.")
+        resp = RedirectResponse("/", status_code=303)
+        # TLS is terminated by the Cloudflare tunnel, so the app only ever sees plain HTTP;
+        # marking the cookie Secure here would stop the tunnel from forwarding it back.
+        resp.set_cookie(COOKIE, sign_session(secret, user, role), max_age=SESSION_TTL, httponly=True, samesite="lax")
+        return resp
 
-        @app.post("/logout")
-        def logout() -> Response:
-            resp = RedirectResponse("/login", status_code=303)
-            resp.delete_cookie(COOKIE)
-            return resp
+    @app.post("/logout")
+    def logout() -> Response:
+        resp = RedirectResponse("/login", status_code=303)
+        resp.delete_cookie(COOKIE)
+        return resp
 
-        @app.middleware("http")
-        async def require_login(request: Request, call_next):
-            if request.url.path in ("/login", "/logout") or authed(request):
-                return await call_next(request)
-            if request.url.path.startswith("/api/"):
-                return Response("Authentication required", status_code=401)
-            return RedirectResponse("/login", status_code=303)
+    AWAY = "Standard logins only work from the home network. Log in as an admin, or connect to the home wifi."
+
+    @app.middleware("http")
+    async def require_login(request: Request, call_next):
+        """Every request: must be logged in, and a standard user must be at home — for
+        pages and API alike. Admins pass from anywhere."""
+        request.state.user, request.state.role = None, "admin"   # open server: everyone is admin
+        if auth_enabled() and request.url.path not in ("/login", "/logout"):
+            api = request.url.path.startswith("/api/")
+            session = verify_session(secret, request.cookies.get(COOKIE, ""))
+            if session is None:
+                return Response("Authentication required", status_code=401) if api \
+                    else RedirectResponse("/login", status_code=303)
+            request.state.user, request.state.role = session
+            if session[1] != "admin" and not home.at_home(request_ip(request)):
+                # Keep the cookie: back on the home wifi they are simply in again.
+                return JSONResponse({"detail": AWAY}, status_code=403) if api \
+                    else HTMLResponse(login_page(AWAY).body, status_code=403)
+        return await call_next(request)
+
+    def request_ip(request: Request) -> str | None:
+        return client_ip(request.headers, request.client.host if request.client else None)
+
+    def whoami(request: Request) -> dict:
+        ip = request_ip(request)
+        at_home = home.at_home(ip)
+        role = request.state.role
+        return {"user": request.state.user, "role": role, "ip": ip, "at_home": at_home,
+                "can_edit": role == "admin" or at_home}
 
     def _range(start: float | None, end: float | None) -> tuple[float, float]:
         end = end or time.time()
@@ -145,13 +170,17 @@ def create_app(settings: Settings) -> FastAPI:
                 "config": {"interval": settings.control_interval, "dev": settings.dev}}
 
     @app.get("/api/control")
-    def control_get() -> dict:
-        return control_payload()
+    def control_get(request: Request) -> dict:
+        return {**control_payload(), "me": whoami(request)}
 
     @app.post("/api/control")
-    def control_set(edit: ControlEdit) -> dict:
+    def control_set(edit: ControlEdit, request: Request) -> dict:
         """On/off, and per-zone day/night ranges and start times. Turning it on clears
-        an override."""
+        an override. Standard users may only change things from the home network."""
+        me = whoami(request)
+        if not me["can_edit"]:
+            raise HTTPException(403, "Changes are allowed only from the home network for standard users.")
+        who = me["user"] or "local"
         if edit.enabled is None and not edit.zones:
             raise HTTPException(400, "nothing to change")
         if edit.enabled is not None:
@@ -159,7 +188,7 @@ def create_app(settings: Settings) -> FastAPI:
             control.set_enabled(edit.enabled)
             if edit.enabled != before:
                 control.log("enabled" if edit.enabled else "disabled",
-                            f"switched {'on' if edit.enabled else 'off'} from the control page")
+                            f"switched {'on' if edit.enabled else 'off'} from the control page", user=who)
         names = {z["entity"]: z["name"] for z in control_zones()}
         for entity, zedit in (edit.zones or {}).items():
             if entity not in names:
@@ -176,11 +205,11 @@ def create_app(settings: Settings) -> FastAPI:
                 keys = (f"{period}_lo", f"{period}_d", f"{period}_hi")
                 if tuple(before[k] for k in keys) != tuple(after[k] for k in keys):
                     fmt = lambda z: f"{z[keys[1]]:g} ({z[keys[0]]:g}–{z[keys[2]]:g})"  # noqa: E731
-                    control.log("target", f"{names[entity]} {period}: {fmt(before)} → {fmt(after)}")
+                    control.log("target", f"{names[entity]} {period}: {fmt(before)} → {fmt(after)}", user=who)
                 st = f"{period}_start"
                 if before[st] != after[st]:
-                    control.log("target", f"{names[entity]} {period} starts {before[st]} → {after[st]}")
-        return control_payload()
+                    control.log("target", f"{names[entity]} {period} starts {before[st]} → {after[st]}", user=who)
+        return {**control_payload(), "me": me}
 
     @app.get("/api/systems")
     def systems() -> list[dict]:
