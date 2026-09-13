@@ -72,7 +72,7 @@ class TestHomeDetector:
         assert h.at_home("93.184.216.200") and h.at_home("45.33.32.7")
         assert not h.at_home("45.33.32.8")
 
-    def test_matches_own_public_ip_with_caching(self):
+    def test_matches_own_public_ipv4_with_caching(self):
         calls = []
         def fetch(url):
             calls.append(url)
@@ -81,6 +81,26 @@ class TestHomeDetector:
         assert h.at_home("93.184.216.9") and not h.at_home("93.184.216.10")
         assert h.public_ip() == "93.184.216.9"
         assert len(calls) == 1   # cached
+
+    def test_ipv6_clients_match_on_the_64_prefix(self):
+        """Phones on the home wifi arrive over IPv6 with their own rotating address in
+        the ISP's delegated prefix; the server's own IPv6 identifies that prefix."""
+        def fetch(url):
+            return "ip=2601:241:8a00:165:e2c2:bab0:bb68:4bad" if "v6" in url else "73.44.64.145"
+        h = HomeDetector(public_ip_url="v4", public_ip6_url="v6", fetch=fetch)
+        assert h.at_home("2601:241:8a00:165:ec23:c726:9d87:799d")     # iPad, same /64
+        assert h.at_home("73.44.64.145")
+        assert not h.at_home("2601:241:8a00:166::1")                   # neighbouring prefix
+        assert not h.at_home("73.44.64.146")
+        assert h.public_ip() == "73.44.64.145"
+
+    def test_one_protocol_failing_keeps_the_other(self):
+        def fetch(url):
+            if "v6" in url:
+                raise OSError("no IPv6 route")
+            return "93.184.216.9"
+        h = HomeDetector(public_ip_url="v4", public_ip6_url="v6", fetch=fetch)
+        assert h.at_home("93.184.216.9") and not h.at_home("2601::1")
 
     def test_bare_ip_response(self):
         h = HomeDetector(public_ip_url="u", fetch=lambda url: " 93.184.216.9\n")
@@ -102,6 +122,10 @@ class TestHomeDetector:
     def test_no_url_means_no_lookup(self):
         h = HomeDetector(fetch=lambda url: (_ for _ in ()).throw(AssertionError("must not fetch")))
         assert h.public_ip() is None and not h.at_home("93.184.216.9")
+
+    def test_ipv6_home_network_listing(self):
+        h = HomeDetector(networks=("2601:241:8a00::/48",))
+        assert h.at_home("2601:241:8a00:1::5") and not h.at_home("2601:241:8a01::5")
 
     def test_garbage_is_not_home(self):
         h = HomeDetector()

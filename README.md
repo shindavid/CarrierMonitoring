@@ -69,7 +69,8 @@ with `.venv/bin/carriermon user add NAME [--role admin|user]` (`list`, `passwd`,
 too); they are stored hashed in the control database. **Admins** can change controller
 settings from anywhere. **Users** can only use the site (view or change) from the home
 network — every request's address (via the Cloudflare tunnel's `CF-Connecting-IP`) must
-equal the server's own public IP, be a LAN address, or be in `CARRIERMON_HOME_NETWORKS`;
+match the server's own public address (IPv4 exactly, IPv6 by /64 prefix — phones mostly
+arrive over IPv6), be a LAN address, or be in `CARRIERMON_HOME_NETWORKS`;
 away from home they get a "log in as an admin or connect to the home wifi" page.
 Every change made through the control page is logged with the login that made it.
 

@@ -36,7 +36,8 @@ class Settings:
     control_interval: int
     control_dry_run: bool
     home_networks: tuple[str, ...]   # CIDRs/IPs that count as "home" besides our own public IP
-    public_ip_url: str | None        # where to learn our public IP (None = don't)
+    public_ip_url: str | None        # where to learn our public IPv4 (None = don't)
+    public_ip6_url: str | None       # ... and IPv6
 
     def require_carrier_login(self) -> None:
         if not self.username or not self.password:
@@ -61,4 +62,5 @@ class Settings:
             control_dry_run=os.environ.get("CARRIERMON_CONTROL_DRY_RUN", "") == "1",
             home_networks=tuple(n.strip() for n in os.environ.get("CARRIERMON_HOME_NETWORKS", "").split(",") if n.strip()),
             public_ip_url=os.environ.get("CARRIERMON_PUBLIC_IP_URL", "https://1.1.1.1/cdn-cgi/trace") or None,
+            public_ip6_url=os.environ.get("CARRIERMON_PUBLIC_IP6_URL", "https://[2606:4700:4700::1111]/cdn-cgi/trace") or None,
         )

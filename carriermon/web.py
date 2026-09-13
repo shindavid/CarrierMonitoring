@@ -61,7 +61,7 @@ def create_app(settings: Settings) -> FastAPI:
     # an admin so an existing deployment keeps working. With neither, the server is
     # open (local dev use).
     secret = load_secret(settings.control_db_path.parent / "secret.key")
-    home = HomeDetector(settings.home_networks, settings.public_ip_url)
+    home = HomeDetector(settings.home_networks, settings.public_ip_url, settings.public_ip6_url)
     env_admin = (settings.auth_user, settings.auth_password) if settings.auth_user and settings.auth_password else None
     COOKIE = "carriermon_session"
 
