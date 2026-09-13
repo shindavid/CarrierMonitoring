@@ -21,18 +21,28 @@
   button:disabled { opacity:.45; cursor:default; }
   #power { min-width:7.5rem; font-weight:700; font-size:1.05rem; color:#fff; border:none; background:var(--off); }
   #power.on { background:var(--on); }
-  .zone { border-top:1px solid var(--line); padding:.6rem 0; }
-  .zone:first-of-type { border-top:none; padding-top:0; }
-  .zone h3 { margin:0 0 .3rem; font-size:1rem; }
-  .row { display:flex; align-items:center; gap:.4rem 1rem; flex-wrap:wrap; padding:.15rem 0; }
-  .row .lbl { min-width:8.5rem; color:var(--muted); display:flex; align-items:center; gap:.4rem; font-size:.9rem; }
-  .row.active .lbl { color:var(--fg); font-weight:700; }
-  .row input[type=time] { font:inherit; font-size:.9rem; padding:.15rem .3rem; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
-  .trip { display:flex; align-items:center; gap:.3rem; }
-  .trip button { width:1.9rem; height:1.9rem; padding:0; font-size:1.05rem; line-height:1; }
-  .trip .v { min-width:2.2rem; text-align:center; font-variant-numeric:tabular-nums; }
-  .trip .v.d { font-weight:700; font-size:1.15rem; min-width:2.6rem; }
-  .trip .sep { color:var(--muted); font-size:.85rem; }
+  /* Zone settings: zone | ☀ day | ☾ night. Each period cell is a 4-column grid
+     (label, value, −, +) so every button lines up down the page. */
+  .zgrid { display:grid; grid-template-columns:auto 1fr 1fr; gap:.4rem .9rem; align-items:start; }
+  .zgrid .hdr { font-size:.85rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; padding-bottom:.2rem; border-bottom:1px solid var(--line); }
+  .zgrid .hdr .ico { font-size:1.1rem; margin-right:.3rem; vertical-align:-.1rem; }
+  .zgrid .zname { font-weight:700; padding-top:.35rem; }
+  .zgrid .sep { grid-column:1 / -1; border-top:1px solid var(--line); }
+  .cell { display:grid; grid-template-columns:4.2rem 2.6rem 2rem 2rem; gap:.25rem .3rem; align-items:center; padding:.2rem .4rem; border-radius:8px; }
+  .cell.active { background:color-mix(in srgb, var(--fg) 6%, transparent); }
+  .cell .from { grid-column:1 / -1; display:flex; align-items:center; gap:.4rem; color:var(--muted); font-size:.85rem; }
+  .cell.active .from { color:var(--fg); }
+  .cell .from input[type=time] { font:inherit; font-size:.85rem; padding:.1rem .25rem; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  .cell .lbl { color:var(--muted); font-size:.85rem; }
+  .cell .v { text-align:right; font-variant-numeric:tabular-nums; padding-right:.2rem; }
+  .cell .v.d { font-weight:700; font-size:1.1rem; }
+  .cell .lbl.d { color:var(--fg); }
+  .cell button { width:2rem; height:1.9rem; padding:0; font-size:1.05rem; line-height:1; }
+  @media (max-width: 560px) {
+    .zgrid { grid-template-columns:1fr 1fr; }
+    .zgrid .zname, .zgrid .hdr.zonehdr { grid-column:1 / -1; }
+    .zgrid .hdr.zonehdr { display:none; }
+  }
   .banner { padding:.6rem .9rem; border-radius:8px; display:none; }
   .banner.show { display:block; }
   .banner.warn { background:var(--warnbg); color:var(--warn); }
@@ -85,7 +95,7 @@
   </div>
 
   <div class="card">
-    <h2>Zones — desired temp and tolerable range</h2>
+    <h2>Zones — target and tolerable range</h2>
     <div id="zonecfg"></div>
   </div>
 
@@ -137,23 +147,26 @@ function periodNow(z) {  // mirrors period_now() in control.py
   return (t >= z.day_start || t < z.night_start) ? 'day' : 'night';
 }
 
-// One editable row: "Day from [07:00]   [−] 69 [+]  ≤  [−] 70 [+]  ≤  [−] 71 [+]"
-function rowHtml(z, period) {
+// One period cell: "from [07:00]" then Max / Target / Min rows, each "label value − +".
+function cellHtml(z, period) {
   const key = `${z.entity}|${period}`;
   const v = pending[key] || {lo: z[`${period}_lo`], d: z[`${period}_d`], hi: z[`${period}_hi`]};
-  const trip = (f, cls) => `<span class="trip"><button data-k="${esc(key)}" data-f="${f}" data-d="-1">−</button><span class="v ${cls}">${v[f]}</span><button data-k="${esc(key)}" data-f="${f}" data-d="1">+</button></span>`;
-  const label = period === 'day' ? 'Day from' : 'Night from';
-  return `<div class="row ${periodNow(z) === period ? 'active' : ''}">
-    <span class="lbl">${label} <input type="time" data-e="${esc(z.entity)}" data-f="${period}_start" value="${esc(z[`${period}_start`])}"></span>
-    ${trip('lo', '')}<span class="trip sep">≤</span>${trip('d', 'd')}<span class="trip sep">≤</span>${trip('hi', '')}
+  const line = (f, label, cls) => `<span class="lbl ${cls}">${label}</span><span class="v ${cls}">${v[f]}</span>` +
+    `<button data-k="${esc(key)}" data-f="${f}" data-d="-1" aria-label="lower ${label}">−</button>` +
+    `<button data-k="${esc(key)}" data-f="${f}" data-d="1" aria-label="raise ${label}">+</button>`;
+  return `<div class="cell ${periodNow(z) === period ? 'active' : ''}">
+    <span class="from">from <input type="time" data-e="${esc(z.entity)}" data-f="${period}_start" value="${esc(z[`${period}_start`])}"></span>
+    ${line('hi', 'Max', '')}${line('d', 'Target', 'd')}${line('lo', 'Min', '')}
   </div>`;
 }
 
 function renderZoneCfg() {
   const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.f : null;
   if (focused && focused.endsWith('_start')) return;   // don't yank a time picker mid-edit
-  $('#zonecfg').innerHTML = data.zones.map(z =>
-    `<div class="zone"><h3>${esc(z.name)}</h3>${rowHtml(z, 'day')}${rowHtml(z, 'night')}</div>`).join('') || '<em>no zones known yet</em>';
+  const head = `<div class="hdr zonehdr">Zone</div><div class="hdr"><span class="ico">☀</span>Day</div><div class="hdr"><span class="ico">☾</span>Night</div>`;
+  const rows = data.zones.map((z, i) =>
+    `${i ? '<div class="sep"></div>' : ''}<div class="zname">${esc(z.name)}</div>${cellHtml(z, 'day')}${cellHtml(z, 'night')}`).join('');
+  $('#zonecfg').innerHTML = data.zones.length ? `<div class="zgrid">${head}${rows}</div>` : '<em>no zones known yet</em>';
   document.querySelectorAll('#zonecfg button[data-k]').forEach(b => b.onclick = () => bump(b.dataset.k, b.dataset.f, +b.dataset.d));
   document.querySelectorAll('#zonecfg input[type=time]').forEach(i => i.onchange = e => {
     if (e.target.value) post({zones: {[i.dataset.e]: {[i.dataset.f]: e.target.value}}});
