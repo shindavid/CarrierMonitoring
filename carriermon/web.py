@@ -29,9 +29,15 @@ SYSTEM_STATE = ["mode", "humid"]
 UNIT_FIELDS = ["opstat", "opmode", "cfm", "blwrpm", "inducerrpm", "statpress", "type"]
 
 
+HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
 class ControlEdit(BaseModel):
     enabled: bool | None = None
-    target: float | None = Field(default=None, ge=55, le=85)
+    target_day: float | None = Field(default=None, ge=55, le=85)
+    target_night: float | None = Field(default=None, ge=55, le=85)
+    day_start: str | None = Field(default=None, pattern=HHMM)
+    night_start: str | None = Field(default=None, pattern=HHMM)
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -128,16 +134,23 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/api/control")
     def control_set(edit: ControlEdit) -> dict:
-        """Only two knobs: on/off and the target. Turning it on clears an override."""
-        if edit.enabled is None and edit.target is None:
+        """On/off, the day and night targets, and when day/night start. Turning it on
+        clears an override."""
+        fields = edit.model_dump(exclude_none=True)
+        if not fields:
             raise HTTPException(400, "nothing to change")
         before = control.settings()
-        control.update_settings(enabled=edit.enabled, target=edit.target)
+        control.update_settings(**fields)
         if edit.enabled is not None and edit.enabled != before["enabled"]:
             control.log("enabled" if edit.enabled else "disabled",
                         f"switched {'on' if edit.enabled else 'off'} from the control page")
-        if edit.target is not None and edit.target != before["target"]:
-            control.log("target", f"target changed {before['target']:g} → {edit.target:g}")
+        labels = {"target_day": "day target", "target_night": "night target",
+                  "day_start": "day starts", "night_start": "night starts"}
+        for key, label in labels.items():
+            new = fields.get(key)
+            if new is not None and new != before[key]:
+                fmt = (lambda v: f"{v:g}") if key.startswith("target") else str
+                control.log("target", f"{label} {fmt(before[key])} → {fmt(new)}")
         return control_payload()
 
     @app.get("/api/systems")

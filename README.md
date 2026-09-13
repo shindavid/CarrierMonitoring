@@ -40,17 +40,19 @@ The thermostat's Auto mode follows the cooling demand of the warmest zones and c
 ignore a zone sitting under its heat setpoint. The built-in controller replaces just that
 heat-or-cool decision: every minute it looks at all zone temps and the outdoor temp,
 picks heat or cool, and holds **every zone at the same target T** (the thermostat's own
-per-zone demand then steers the dampers). Rules, in order:
+per-zone demand then steers the dampers). T means the band [T−1, T+1]. Rules, in order:
 
-1. any zone ≥ T+2 and outdoor > T−10 → cool; any zone ≤ T−2 and outdoor < T+10 → heat
-   (both → the larger error wins, equal → outdoor decides)
-2. every zone ≤ T with at least one below it, for 5 minutes → heat (mirror → cool)
-3. otherwise keep the current mode
+1. any zone outside the band → heat or cool toward it (a zone above *and* one below:
+   the larger error wins, equal → outdoor above T cools, below T heats)
+2. all zones in the band → outdoor above the band → cool, below it → heat
+3. all zones and the outdoor temp in the band → keep the current mode
 
-It writes cool T / heat T−2 in cool mode and heat T / cool T+2 in heat mode (the
-thermostat's deadband). Any change made at the thermostat or in the Carrier app to the
-mode, a setpoint or a hold **switches the controller off**; press ON on `/control` to
-re-arm it.
+There is a daytime and a nighttime T, switched by the day-start / night-start times on
+the control page. The controller writes cool T / heat T−2 in cool mode and heat T /
+cool T+2 in heat mode (the thermostat's deadband). Any change made at the thermostat or
+in the Carrier app to the mode, a setpoint or a hold **switches the controller off**;
+press ON on `/control` to re-arm it. A write that fails part-way (Carrier's API times
+out now and then) is simply retried on the next check.
 
 Where it runs: in the production checkout the loop is hosted by `carriermon ingest`
 (the process holding the Carrier session); `CARRIERMON_CONTROL_DRY_RUN=1` makes it log
@@ -69,4 +71,4 @@ touches production's controller.
 - `GET /api/series?serial=&entity=zone:1&field=rt&start=&end=`
 - `GET /api/events?serial=&start=&end=`
 - `GET /api/dashboard?serial=&start=&end=`
-- `GET /api/control`, `POST /api/control {"enabled": bool, "target": 55..85}` — controller settings, state, log
+- `GET /api/control`, `POST /api/control {"enabled", "target_day", "target_night", "day_start", "night_start"}` — controller settings, state, log

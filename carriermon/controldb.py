@@ -22,10 +22,13 @@ from typing import Any
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS control_settings (
-    id          INTEGER PRIMARY KEY CHECK (id = 1),
-    enabled     INTEGER NOT NULL DEFAULT 0,
-    target      REAL    NOT NULL DEFAULT 70,
-    updated_ts  REAL    NOT NULL
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled      INTEGER NOT NULL DEFAULT 0,
+    target_day   REAL    NOT NULL DEFAULT 70,
+    target_night REAL    NOT NULL DEFAULT 70,
+    day_start    TEXT    NOT NULL DEFAULT '07:00',   -- HH:MM local time
+    night_start  TEXT    NOT NULL DEFAULT '22:00',
+    updated_ts   REAL    NOT NULL
 );
 CREATE TABLE IF NOT EXISTS control_state (
     id                  INTEGER PRIMARY KEY CHECK (id = 1),
@@ -41,10 +44,7 @@ CREATE TABLE IF NOT EXISTS control_state (
     override            TEXT,     -- why the controller switched itself off, or NULL
     override_ts         REAL,
     dry_run             INTEGER,
-    loop_alive_ts       REAL,     -- heartbeat; the UI warns when this goes stale
-    lean_side           TEXT,     -- 'below' | 'above' | NULL: which way the whole house leans (rule 3)
-    lean_since          REAL,     -- when that lean started
-    lean_target         REAL      -- target the lean was measured against
+    loop_alive_ts       REAL      -- heartbeat; the UI warns when this goes stale
 );
 CREATE TABLE IF NOT EXISTS control_log (
     id      INTEGER PRIMARY KEY,
@@ -72,35 +72,48 @@ class ControlStore:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")  # web + loop both write
         self.conn.executescript(SCHEMA)
-        # Columns added after the first release; CREATE TABLE IF NOT EXISTS won't add them.
-        have = {r[1] for r in self.conn.execute("PRAGMA table_info(control_state)")}
-        for column, kind in (("lean_side", "TEXT"), ("lean_since", "REAL"), ("lean_target", "REAL")):
-            if column not in have:
-                self.conn.execute(f"ALTER TABLE control_state ADD COLUMN {column} {kind}")
+        # Day/night targets replaced the single `target` column; upgrade older files in
+        # place (CREATE TABLE IF NOT EXISTS won't add columns) and carry the old value over.
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(control_settings)")}
+        if "target_day" not in have:
+            with self.conn:
+                for column, spec in (("target_day", "REAL NOT NULL DEFAULT 70"), ("target_night", "REAL NOT NULL DEFAULT 70"),
+                                     ("day_start", "TEXT NOT NULL DEFAULT '07:00'"), ("night_start", "TEXT NOT NULL DEFAULT '22:00'")):
+                    self.conn.execute(f"ALTER TABLE control_settings ADD COLUMN {column} {spec}")
+                if "target" in have:
+                    self.conn.execute("UPDATE control_settings SET target_day=target, target_night=target")
         self.conn.row_factory = sqlite3.Row
         with self.conn:
             self.conn.execute(
-                "INSERT OR IGNORE INTO control_settings(id, enabled, target, updated_ts) VALUES (1, 0, 70, ?)",
+                "INSERT OR IGNORE INTO control_settings(id, enabled, updated_ts) VALUES (1, 0, ?)",
                 (time.time(),),
             )
             self.conn.execute("INSERT OR IGNORE INTO control_state(id) VALUES (1)")
 
     # -- settings (edited by the web UI) ---------------------------------
-    def settings(self) -> dict:
-        row = self.conn.execute("SELECT enabled, target, updated_ts FROM control_settings WHERE id=1").fetchone()
-        return {"enabled": bool(row["enabled"]), "target": row["target"], "updated_ts": row["updated_ts"]}
+    FIELDS = ("target_day", "target_night", "day_start", "night_start")
 
-    def update_settings(self, enabled: bool | None = None, target: float | None = None) -> dict:
-        """Apply the user's edits. Turning the controller on also clears any override,
-        which is how the user re-arms it after touching the thermostat."""
+    def settings(self) -> dict:
+        row = self.conn.execute(
+            "SELECT enabled, target_day, target_night, day_start, night_start, updated_ts FROM control_settings WHERE id=1"
+        ).fetchone()
+        out = {k: row[k] for k in self.FIELDS}
+        out.update(enabled=bool(row["enabled"]), updated_ts=row["updated_ts"])
+        return out
+
+    def update_settings(self, enabled: bool | None = None, **fields: Any) -> dict:
+        """Apply the user's edits (any of FIELDS). Turning the controller on also clears
+        any override, which is how the user re-arms it after touching the thermostat."""
         now = time.time()
         with self.conn:
             if enabled is not None:
                 self.conn.execute("UPDATE control_settings SET enabled=?, updated_ts=? WHERE id=1", (int(enabled), now))
                 if enabled:
                     self.conn.execute("UPDATE control_state SET override=NULL, override_ts=NULL WHERE id=1")
-            if target is not None:
-                self.conn.execute("UPDATE control_settings SET target=?, updated_ts=? WHERE id=1", (float(target), now))
+            for key, value in fields.items():
+                if key not in self.FIELDS or value is None:
+                    continue
+                self.conn.execute(f"UPDATE control_settings SET {key}=?, updated_ts=? WHERE id=1", (value, now))
         return self.settings()
 
     # -- state (owned by the loop) ---------------------------------------

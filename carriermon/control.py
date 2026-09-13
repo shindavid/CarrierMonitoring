@@ -6,13 +6,14 @@ replaces that one decision — heat or cool — and leaves everything else to th
 thermostat: it holds every zone at the same target ``T``, so the thermostat's
 per-zone demand steers the dampers.
 
-Rules (evaluated every minute; O = outdoor temp, band = 2 °F):
-  1. any zone >= T+2 and O > T-10  -> cool     (a hot zone, unless it's much colder out)
-  2. any zone <= T-2 and O < T+10  -> heat     (a cold zone, unless it's much hotter out)
-     if both 1 and 2 hold, the larger error wins; equal -> outdoor decides
-  3. every zone <= T and some zone < T, and that has held for 5 min -> heat
-     every zone >= T and some zone > T, and that has held for 5 min -> cool
-  4. otherwise keep the current mode
+Rules (evaluated every minute; the target T means the band [T-1, T+1]; O = outdoor):
+  1. any zone outside the band -> heat or cool toward it. A zone above and a zone
+     below at once: the larger error wins; equal -> O above T cools, below T heats.
+  2. every zone in the band -> follow the outdoors: O above the band -> cool,
+     O below the band -> heat.
+  3. every zone in the band and O in the band -> keep the current mode.
+The target has a daytime and a nighttime value; which applies depends on the
+day-start / night-start times in the settings.
 Setpoints written: cool mode -> cool T / heat T-gap ; heat mode -> heat T / cool T+gap,
 where gap is the thermostat's configured deadband (2 °F).
 
@@ -32,6 +33,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from .controldb import ControlStore
@@ -40,10 +42,8 @@ from .settings import Settings
 
 log = logging.getLogger(__name__)
 
-BAND = 2.0        # zone error (°F) that counts as demand
-FAR = 10.0        # don't fight the outdoors when it is this far the other way
+BAND = 1.0        # half-width of the comfort band around the target (°F)
 DEFAULT_GAP = 2.0 # thermostat deadband if config doesn't say
-PERSIST = 5 * 60  # seconds a whole-house lean (rule 3) must hold before acting on it
 
 
 # ---------------------------------------------------------------- decision
@@ -55,62 +55,49 @@ class Decision:
     cold: float | None = None  # largest deficit below target
 
 
-def lean(target: float, temps: list[float]) -> str | None:
-    """Which side of the target the whole house is on: 'below' if every zone is at or
-    under T and at least one is under, 'above' for the mirror, else None."""
-    if temps and all(t <= target for t in temps) and any(t < target for t in temps):
-        return "below"
-    if temps and all(t >= target for t in temps) and any(t > target for t in temps):
-        return "above"
-    return None
-
-
-def decide(target: float, zones: dict[str, float | None], oat: float | None,
-           lean_side: str | None = None, lean_for: float = 0.0) -> Decision:
-    """Pure rule evaluation. ``zones`` maps display name -> room temp; ``lean_side`` /
-    ``lean_for`` say which way the whole house leans (see ``lean``) and for how many
-    seconds that has been true — the loop tracks it, since it needs memory."""
+def decide(target: float, zones: dict[str, float | None], oat: float | None) -> Decision:
+    """Pure rule evaluation. ``zones`` maps display name -> room temp."""
     temps = {name: rt for name, rt in zones.items() if rt is not None}
     if not temps:
         return Decision(None, "no zone temperatures available")
+    lo, hi = target - BAND, target + BAND
+    band = f"{lo:g}–{hi:g}"
     hot_zone, hot_rt = max(temps.items(), key=lambda kv: kv[1])
     cold_zone, cold_rt = min(temps.items(), key=lambda kv: kv[1])
     hot, cold = hot_rt - target, target - cold_rt
     oat_s = "n/a" if oat is None else f"{oat:g}"
+    too_hot, too_cold = hot_rt > hi, cold_rt < lo
+    cool_why = f"{hot_zone} is {hot_rt:g}, above {band}"
+    heat_why = f"{cold_zone} is {cold_rt:g}, below {band}"
 
-    cool_ok = hot >= BAND and (oat is None or oat > target - FAR)
-    heat_ok = cold >= BAND and (oat is None or oat < target + FAR)
-    cool_why = f"{hot_zone} is {hot_rt:g} (≥ {target + BAND:g}), outdoor {oat_s}"
-    heat_why = f"{cold_zone} is {cold_rt:g} (≤ {target - BAND:g}), outdoor {oat_s}"
-
-    if cool_ok and heat_ok:
+    if too_hot and too_cold:
         if hot > cold:
-            return Decision("cool", f"both sides out of band; larger error is hot: {cool_why}", hot, cold)
+            return Decision("cool", f"zones on both sides of {band}; larger error is hot: {cool_why}", hot, cold)
         if cold > hot:
-            return Decision("heat", f"both sides out of band; larger error is cold: {heat_why}", hot, cold)
+            return Decision("heat", f"zones on both sides of {band}; larger error is cold: {heat_why}", hot, cold)
         if oat is not None and oat > target:
-            return Decision("cool", f"both sides out of band by {hot:g}; outdoor {oat_s} > target", hot, cold)
+            return Decision("cool", f"zones {hot:g} out on both sides of {band}; outdoor {oat_s} > target", hot, cold)
         if oat is not None and oat < target:
-            return Decision("heat", f"both sides out of band by {cold:g}; outdoor {oat_s} < target", hot, cold)
-        return Decision(None, f"both sides out of band by {hot:g}; outdoor at target — keep mode", hot, cold)
-    if cool_ok:
+            return Decision("heat", f"zones {cold:g} out on both sides of {band}; outdoor {oat_s} < target", hot, cold)
+        return Decision(None, f"zones {hot:g} out on both sides of {band}; outdoor at target — keep mode", hot, cold)
+    if too_hot:
         return Decision("cool", f"hot zone: {cool_why}", hot, cold)
-    if heat_ok:
+    if too_cold:
         return Decision("heat", f"cold zone: {heat_why}", hot, cold)
-    # No actionable demand. Say why a hot/cold zone was ignored, if one was.
-    if hot >= BAND:
-        no_demand = f"ignoring hot {hot_zone} ({hot_rt:g}): outdoor {oat_s} is ≤ {target - FAR:g}"
-    elif cold >= BAND:
-        no_demand = f"ignoring cold {cold_zone} ({cold_rt:g}): outdoor {oat_s} is ≥ {target + FAR:g}"
-    else:
-        no_demand = f"all zones within ±{BAND:g}"
-    if lean_side and lean_for >= PERSIST:
-        mins = int(lean_for / 60)
-        if lean_side == "below":
-            return Decision("heat", f"{no_demand}; every zone ≤ {target:g} and {cold_zone} below it for {mins} min", hot, cold)
-        return Decision("cool", f"{no_demand}; every zone ≥ {target:g} and {hot_zone} above it for {mins} min", hot, cold)
-    lean_s = f"; house leaning {lean_side} for {int(lean_for / 60)} min" if lean_side else ""
-    return Decision(None, f"{no_demand}{lean_s} — keep mode", hot, cold)
+    if oat is not None and oat > hi:
+        return Decision("cool", f"all zones within {band}; outdoor {oat_s} above it", hot, cold)
+    if oat is not None and oat < lo:
+        return Decision("heat", f"all zones within {band}; outdoor {oat_s} below it", hot, cold)
+    return Decision(None, f"all zones within {band}; outdoor {oat_s} in it — keep mode", hot, cold)
+
+
+def period_now(day_start: str, night_start: str, now: datetime | None = None) -> str:
+    """'day' or 'night' by wall clock. Times are 'HH:MM'; day runs from day_start up to
+    night_start, wrapping midnight if night_start is the earlier of the two."""
+    t = (now or datetime.now()).strftime("%H:%M")
+    if day_start <= night_start:
+        return "day" if day_start <= t < night_start else "night"
+    return "day" if (t >= day_start or t < night_start) else "night"
 
 
 def setpoints(mode: str, target: float, gap: float) -> dict[str, float]:
@@ -288,17 +275,9 @@ class ControlLoop:
                     return
 
         # -- decide --
-        target = float(cfg["target"])
-        # Rule 3 needs to know how long the house has leaned one way; remember when it
-        # started, and start over if the lean flips or the target moves.
-        side = lean(target, [z["rt"] for z in live.zones if z["rt"] is not None])
-        if side != state["lean_side"] or target != state["lean_target"] or not state["lean_since"]:
-            self.control.set_state(lean_side=side, lean_since=now if side else None, lean_target=target)
-            lean_since = now if side else None
-        else:
-            lean_since = state["lean_since"]
-        lean_for = now - lean_since if lean_since else 0.0
-        decision = decide(target, {z["name"]: z["rt"] for z in live.zones}, live.oat, side, lean_for)
+        period = period_now(cfg["day_start"], cfg["night_start"])
+        target = float(cfg["target_day"] if period == "day" else cfg["target_night"])
+        decision = decide(target, {z["name"]: z["rt"] for z in live.zones}, live.oat)
         if decision.mode is not None:
             mode, rule = decision.mode, decision.rule
         elif state["mode"] in ("heat", "cool"):
@@ -343,11 +322,11 @@ class ControlLoop:
 
         temps = ", ".join(f"{z['name']} {z['rt']:g}" if z["rt"] is not None else f"{z['name']} ?" for z in live.zones)
         oat_s = "?" if live.oat is None else f"{live.oat:g}"
-        self.control.log("check", f"{mode} (target {target:g}, outdoor {oat_s}): {temps} — {decision.rule}")
+        self.control.log("check", f"{mode} (target {target:g} {period}, outdoor {oat_s}): {temps} — {decision.rule}")
         self.control.set_state(last_eval_ts=now, last_eval={
             "ts": now, "target": target, "oat": live.oat, "thermostat_mode": live.mode, "gap": live.gap,
             "zones": [{k: z[k] for k in ("name", "rt", "htsp", "clsp", "hold")} for z in live.zones],
-            "hot": decision.hot, "cold": decision.cold, "lean": side, "lean_for": lean_for,
+            "hot": decision.hot, "cold": decision.cold, "period": period,
             "decision": decision.mode, "decision_rule": decision.rule,
             "mode": mode, "rule": rule,
             "mismatch": "; ".join(mismatches(live, state["expected"])) if state["expected"] else None,

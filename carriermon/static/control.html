@@ -22,6 +22,11 @@
   .controls { display:flex; flex-wrap:wrap; gap:1rem 2rem; align-items:center; }
   #power { min-width:7.5rem; font-weight:700; font-size:1.05rem; color:#fff; border:none; background:var(--off); }
   #power.on { background:var(--on); }
+  .targets { display:grid; gap:.5rem; }
+  .row { display:flex; align-items:center; gap:.8rem; flex-wrap:wrap; }
+  .row .lbl { min-width:9.5rem; color:var(--muted); display:flex; align-items:center; gap:.4rem; }
+  .row.active .lbl { color:var(--fg); font-weight:700; }
+  .row input[type=time] { font:inherit; padding:.2rem .3rem; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
   .target { display:flex; align-items:center; gap:.5rem; }
   .target button { width:2.6rem; height:2.6rem; font-size:1.3rem; padding:0; }
   .target .val { font-size:1.9rem; font-weight:700; min-width:4rem; text-align:center; font-variant-numeric:tabular-nums; }
@@ -77,10 +82,23 @@
   <div class="card">
     <div class="controls">
       <button id="power">…</button>
-      <div class="target">
-        <button id="dec" aria-label="lower target">−</button>
-        <div class="val"><span id="target">–</span><small>°F</small></div>
-        <button id="inc" aria-label="raise target">+</button>
+      <div class="targets">
+        <div class="row" id="row_day">
+          <span class="lbl">Day from <input id="day_start" type="time"></span>
+          <div class="target">
+            <button data-f="target_day" data-d="-1" aria-label="lower day target">−</button>
+            <div class="val"><span id="target_day">–</span><small>°F</small></div>
+            <button data-f="target_day" data-d="1" aria-label="raise day target">+</button>
+          </div>
+        </div>
+        <div class="row" id="row_night">
+          <span class="lbl">Night from <input id="night_start" type="time"></span>
+          <div class="target">
+            <button data-f="target_night" data-d="-1" aria-label="lower night target">−</button>
+            <div class="val"><span id="target_night">–</span><small>°F</small></div>
+            <button data-f="target_night" data-d="1" aria-label="raise night target">+</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -88,6 +106,7 @@
   <div class="card">
     <h2>Controller</h2>
     <dl class="kv">
+      <dt>Target now</dt><dd id="targetnow">–</dd>
       <dt>Mode</dt><dd id="mode">–</dd>
       <dt>Because</dt><dd id="rule">–</dd>
       <dt>Rules ask for</dt><dd id="decision">–</dd>
@@ -118,7 +137,7 @@ if (document.documentElement.dataset.env === 'dev') {
   $('#favicon').href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%23d97706'/><text x='16' y='22' font-size='18' font-family='sans-serif' font-weight='bold' fill='%23fff' text-anchor='middle'>D</text></svg>";
 }
 
-let data = null, pendingTarget = null, targetTimer = null;
+let data = null; const pending = {}, timers = {};
 const fmtT = ts => ts ? new Date(ts * 1000).toLocaleString([], {month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit'}) : '–';
 const ago = ts => { if (!ts) return '–'; const m = Math.round((Date.now()/1000 - ts) / 60); return m < 1 ? 'just now' : m < 90 ? `${m} min ago` : `${Math.round(m/60)} h ago`; };
 const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -128,7 +147,12 @@ function render() {
   const on = settings.enabled;
   $('#power').textContent = on ? 'ON' : 'OFF';
   $('#power').className = on ? 'on' : '';
-  if (pendingTarget === null) $('#target').textContent = settings.target;
+  for (const f of ['target_day', 'target_night']) if (pending[f] == null) $('#' + f).textContent = settings[f];
+  for (const f of ['day_start', 'night_start']) if (document.activeElement !== $('#' + f)) $('#' + f).value = settings[f];
+  const period = periodNow(settings);
+  $('#row_day').classList.toggle('active', period === 'day');
+  $('#row_night').classList.toggle('active', period === 'night');
+  $('#targetnow').textContent = `${period === 'day' ? settings.target_day : settings.target_night} °F (${period}), band ±1`;
 
   const ov = $('#override');
   ov.className = 'banner bad' + (state.override ? ' show' : '');
@@ -153,10 +177,10 @@ function render() {
   $('#oat').textContent = ev.oat != null ? `${ev.oat} °F` : '–';
   $('#lasteval').textContent = state.last_eval_ts ? `${ago(state.last_eval_ts)}${ev.mismatch ? ' — mismatch: ' + ev.mismatch : ''}` : 'never';
 
-  const T = ev.target ?? settings.target;
+  const T = ev.target ?? (period === 'day' ? settings.target_day : settings.target_night);
   $('#zones').innerHTML = (ev.zones || []).map(z => {
     const d = z.rt == null ? null : z.rt - T;
-    const cls = d == null ? '' : d >= 2 ? 'hot' : d <= -2 ? 'cold' : '';
+    const cls = d == null ? '' : d > 1 ? 'hot' : d < -1 ? 'cold' : '';
     return `<tr><td>${esc(z.name)}</td><td class="num">${z.rt ?? '–'}</td><td class="num ${cls}">${d == null ? '–' : (d > 0 ? '+' : '') + d}</td>
             <td class="num">${z.htsp ?? '–'}</td><td class="num">${z.clsp ?? '–'}</td><td>${z.hold ?? '–'}</td></tr>`;
   }).join('') || '<tr><td colspan="6">no evaluation yet</td></tr>';
@@ -177,17 +201,22 @@ async function post(body) {
   data = await r.json(); render();
 }
 
-$('#power').onclick = () => post({enabled: !data.settings.enabled});
-function bump(delta) {
-  const cur = pendingTarget ?? data.settings.target;
-  pendingTarget = Math.min(85, Math.max(55, cur + delta));
-  $('#target').textContent = pendingTarget;
-  clearTimeout(targetTimer);
-  targetTimer = setTimeout(async () => { const t = pendingTarget; pendingTarget = null; await post({target: t}); }, 600);
+function periodNow(s) {  // mirrors period_now() in control.py
+  const t = new Date().toTimeString().slice(0, 5);
+  if (s.day_start <= s.night_start) return (s.day_start <= t && t < s.night_start) ? 'day' : 'night';
+  return (t >= s.day_start || t < s.night_start) ? 'day' : 'night';
 }
-$('#inc').onclick = () => bump(1);
+$('#power').onclick = () => post({enabled: !data.settings.enabled});
+function bump(field, delta) {
+  const cur = pending[field] ?? data.settings[field];
+  pending[field] = Math.min(85, Math.max(55, cur + delta));
+  $('#' + field).textContent = pending[field];
+  clearTimeout(timers[field]);
+  timers[field] = setTimeout(async () => { const v = pending[field]; pending[field] = null; await post({[field]: v}); }, 600);
+}
+document.querySelectorAll('button[data-f]').forEach(b => b.onclick = () => bump(b.dataset.f, +b.dataset.d));
+for (const f of ['day_start', 'night_start']) $('#' + f).onchange = e => { if (e.target.value) post({[f]: e.target.value}); };
 $('#showchecks').onchange = () => { if (data) render(); };
-$('#dec').onclick = () => bump(-1);
 
 load();
 setInterval(load, 30000);
