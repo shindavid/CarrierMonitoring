@@ -78,15 +78,6 @@
   th { font-weight:600; color:var(--muted); font-size:.85rem; }
   td.num { text-align:right; }
   .hot { color:var(--heat); } .cold { color:var(--cool); }
-  #log { list-style:none; margin:0; padding:0; font-size:.9rem; }
-  #log li { padding:.3rem 0; border-bottom:1px solid var(--line); display:grid; grid-template-columns:auto auto 1fr; gap:.6rem; align-items:baseline; }
-  #log time { color:var(--muted); white-space:nowrap; font-variant-numeric:tabular-nums; }
-  .tag { font-size:.7rem; text-transform:uppercase; letter-spacing:.05em; padding:.05rem .4rem; border-radius:4px; background:var(--line); white-space:nowrap; }
-  .tag.override, .tag.error { background:var(--badbg); color:var(--bad); }
-  .tag.mode { background:var(--warnbg); color:var(--warn); }
-  .tag.write { background:color-mix(in srgb, var(--cool) 18%, transparent); }
-  .tag.check { opacity:.6; }
-  #log li.check { color:var(--muted); }
   #status { color:var(--muted); font-size:.85rem; margin-left:auto; }
 
   #devbadge { display:none; }
@@ -141,10 +132,6 @@
     </table>
   </div>
 
-  <div class="card">
-    <h2>Log <label style="float:right; text-transform:none; letter-spacing:0; font-weight:400"><input id="showchecks" type="checkbox" checked> every-minute checks</label></h2>
-    <ul id="log"></ul>
-  </div>
 </main>
 
 <script>
@@ -309,7 +296,7 @@ function paintSlider(key, v) {
 }
 
 function render() {
-  const {settings, state, log, config} = data;
+  const {settings, state, config} = data;
   const on = settings.enabled;
   $('#power').textContent = on ? 'ON' : 'OFF';
   $('#power').className = on ? 'on' : '';
@@ -346,9 +333,6 @@ function render() {
             <td>${status}</td><td class="num">${z.htsp ?? '–'}</td><td class="num">${z.clsp ?? '–'}</td><td>${z.hold ?? '–'}</td></tr>`;
   }).join('') || '<tr><td colspan="7">no evaluation yet</td></tr>';
 
-  const showChecks = $('#showchecks').checked;
-  $('#log').innerHTML = log.filter(e => showChecks || e.event !== 'check').map(e =>
-    `<li class="${esc(e.event)}"><time>${fmtT(e.ts)}</time><span class="tag ${esc(e.event)}">${esc(e.event)}</span><span>${esc(e.message)}</span></li>`).join('');
   $('#status').textContent = `updated ${new Date().toLocaleTimeString()}`;
 }
 
@@ -370,7 +354,6 @@ async function post(body) {
 }
 
 $('#power').onclick = () => post({enabled: !data.settings.enabled});
-$('#showchecks').onchange = () => { if (data) render(); };
 
 load();
 setInterval(load, 30000);
