@@ -12,8 +12,7 @@ Rules (evaluated every minute; O = outdoor temp, band = 2 °F):
      if both 1 and 2 hold, the larger error wins; equal -> outdoor decides
   3. every zone <= T and some zone < T, and that has held for 5 min -> heat
      every zone >= T and some zone > T, and that has held for 5 min -> cool
-  4. O >= T+2 -> cool ; O <= T-2 -> heat       (no demand: pre-position toward outdoors)
-  5. otherwise keep the mode the thermostat is in
+  4. otherwise keep the current mode
 Setpoints written: cool mode -> cool T / heat T-gap ; heat mode -> heat T / cool T+gap,
 where gap is the thermostat's configured deadband (2 °F).
 
@@ -42,7 +41,6 @@ from .settings import Settings
 log = logging.getLogger(__name__)
 
 BAND = 2.0        # zone error (°F) that counts as demand
-OAT_BAND = 2.0    # outdoor hysteresis for the no-demand rule
 FAR = 10.0        # don't fight the outdoors when it is this far the other way
 DEFAULT_GAP = 2.0 # thermostat deadband if config doesn't say
 PERSIST = 5 * 60  # seconds a whole-house lean (rule 3) must hold before acting on it
@@ -112,11 +110,7 @@ def decide(target: float, zones: dict[str, float | None], oat: float | None,
             return Decision("heat", f"{no_demand}; every zone ≤ {target:g} and {cold_zone} below it for {mins} min", hot, cold)
         return Decision("cool", f"{no_demand}; every zone ≥ {target:g} and {hot_zone} above it for {mins} min", hot, cold)
     lean_s = f"; house leaning {lean_side} for {int(lean_for / 60)} min" if lean_side else ""
-    if oat is not None and oat >= target + OAT_BAND:
-        return Decision("cool", f"{no_demand}{lean_s}; outdoor {oat_s} ≥ {target + OAT_BAND:g}", hot, cold)
-    if oat is not None and oat <= target - OAT_BAND:
-        return Decision("heat", f"{no_demand}{lean_s}; outdoor {oat_s} ≤ {target - OAT_BAND:g}", hot, cold)
-    return Decision(None, f"{no_demand}; outdoor {oat_s} near target{lean_s} — keep mode", hot, cold)
+    return Decision(None, f"{no_demand}{lean_s} — keep mode", hot, cold)
 
 
 def setpoints(mode: str, target: float, gap: float) -> dict[str, float]:
