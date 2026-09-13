@@ -27,24 +27,33 @@
   .zgrid .hdr { font-size:.85rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; padding-bottom:.2rem; border-bottom:1px solid var(--line); }
   .zgrid .hdr .ico { font-size:1.1rem; margin-right:.3rem; vertical-align:-.1rem; }
   .zgrid .zname { font-weight:700; padding-top:.35rem; }
+  .zgrid .ztemp { font-weight:400; font-size:1.5rem; color:var(--muted); font-variant-numeric:tabular-nums; line-height:1.2; }
+  .zgrid .ztemp small { font-size:.75rem; }
   .zgrid .sep { grid-column:1 / -1; border-top:1px solid var(--line); }
   .cell { display:grid; gap:.35rem; padding:.3rem .5rem .4rem; border-radius:8px; min-width:11rem; }
   .cell.active { background:color-mix(in srgb, var(--fg) 6%, transparent); }
   .cell .from { display:flex; align-items:center; gap:.4rem; color:var(--muted); font-size:.85rem; }
   .cell.active .from { color:var(--fg); }
   .cell .from input[type=time] { font:inherit; font-size:.85rem; padding:.1rem .25rem; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
-  /* min value | track with three markers | max value; the target value floats above its marker */
-  .sl { display:grid; grid-template-columns:2rem 1fr 2rem; align-items:end; gap:.3rem; font-variant-numeric:tabular-nums; }
-  .sl .end { font-size:.9rem; color:var(--muted); padding-bottom:.35rem; }
+  /* Two sliders on the same 60-80 scale, stacked so the tracks line up:
+     range  —  min value | track with min/max markers and a filled band | max value
+     target —           | track with one knob, its value floating above |          */
+  .sl { display:grid; grid-template-columns:2rem 1fr 2rem; align-items:center; gap:.3rem; font-variant-numeric:tabular-nums; }
+  .sl .end { font-size:.9rem; color:var(--muted); }
   .sl .end.r { text-align:right; }
-  .slider { position:relative; height:3rem; touch-action:none; user-select:none; -webkit-user-select:none; }
-  .slider .track { position:absolute; left:0; right:0; top:2.1rem; height:4px; border-radius:2px; background:var(--line); }
-  .slider .fill { position:absolute; top:2.1rem; height:4px; border-radius:2px; background:color-mix(in srgb, var(--muted) 55%, transparent); }
-  .slider .mark { position:absolute; top:2.1rem; transform:translate(-50%, -50%); margin-top:2px; cursor:grab; }
+  .slider { position:relative; touch-action:none; user-select:none; -webkit-user-select:none; }
+  .slider.range { height:1.4rem; }
+  .slider.target { height:2.6rem; }
+  .slider .track { position:absolute; left:0; right:0; height:4px; border-radius:2px; background:var(--line); }
+  .slider.range .track, .slider.range .fill, .slider.range .mark { top:.7rem; }
+  .slider.target .track, .slider.target .mark { top:1.9rem; }
+  .slider .fill { position:absolute; height:4px; border-radius:2px; background:color-mix(in srgb, var(--muted) 55%, transparent); }
+  .slider .mark { position:absolute; transform:translate(-50%, -50%); margin-top:2px; cursor:grab; }
   .slider .mark::after { content:""; position:absolute; inset:-.7rem; }   /* fat touch target */
-  .slider .mark.lo, .slider .mark.hi { width:4px; height:16px; border-radius:2px; background:var(--muted); }
-  .slider .mark.d { width:14px; height:14px; border-radius:50%; background:var(--fg); border:2px solid var(--bg); box-shadow:0 0 0 1px var(--muted); }
+  .slider .mark.lo, .slider .mark.hi { width:6px; height:16px; border-radius:3px; background:var(--muted); }
+  .slider .mark.d { width:16px; height:16px; border-radius:50%; background:var(--fg); border:2px solid var(--bg); box-shadow:0 0 0 1px var(--muted); }
   .slider .dval { position:absolute; top:0; transform:translateX(-50%); font-weight:700; font-size:1.05rem; white-space:nowrap; }
+  .slider.target .band { position:absolute; top:1.9rem; height:4px; background:color-mix(in srgb, var(--muted) 25%, transparent); }
   .steppers { display:grid; grid-template-columns:1fr 1fr 1fr; justify-items:center; }
   .stp { display:grid; justify-items:center; gap:.15rem; }
   .stp .lbl { font-size:.75rem; color:var(--muted); }
@@ -172,15 +181,21 @@ function cellHtml(z, period) {
   return `<div class="cell" data-k="${esc(key)}">
     <span class="from">from <input type="time" data-e="${esc(z.entity)}" data-f="${period}_start" value="${esc(z[`${period}_start`])}"></span>
     <div class="sl"><span class="end">${v.lo}</span>
-      <div class="slider" data-k="${esc(key)}">
+      <div class="slider range" data-k="${esc(key)}">
         <div class="track"></div>
         <div class="fill" style="left:${pct(v.lo)};width:calc(${pct(v.hi)} - ${pct(v.lo)})"></div>
-        <div class="dval" style="left:${pct(v.d)}">${v.d}</div>
         <div class="mark lo" data-f="lo" style="left:${pct(v.lo)}"></div>
         <div class="mark hi" data-f="hi" style="left:${pct(v.hi)}"></div>
-        <div class="mark d" data-f="d" style="left:${pct(v.d)}"></div>
       </div>
       <span class="end r">${v.hi}</span></div>
+    <div class="sl"><span></span>
+      <div class="slider target" data-k="${esc(key)}">
+        <div class="track"></div>
+        <div class="band" style="left:${pct(v.lo)};width:calc(${pct(v.hi)} - ${pct(v.lo)})"></div>
+        <div class="dval" style="left:${pct(v.d)}">${v.d}</div>
+        <div class="mark d" data-f="d" style="left:${pct(v.d)}"></div>
+      </div>
+      <span></span></div>
     <div class="steppers">${stp('lo', 'Min', '')}${stp('d', 'Target', 'd')}${stp('hi', 'Max', '')}</div>
   </div>`;
 }
@@ -194,7 +209,7 @@ function renderZoneCfg() {
   if (!grid || grid.dataset.sig !== sig) {
     const head = `<div class="hdr zonehdr">Zone</div><div class="hdr"><span class="ico">☀</span>Day</div><div class="hdr"><span class="ico">☾</span>Night</div>`;
     const rows = data.zones.map((z, i) =>
-      `${i ? '<div class="sep"></div>' : ''}<div class="zname">${esc(z.name)}</div>${cellHtml(z, 'day')}${cellHtml(z, 'night')}`).join('');
+      `${i ? '<div class="sep"></div>' : ''}<div class="zname">${esc(z.name)}<div class="ztemp" data-e="${esc(z.entity)}">–</div></div>${cellHtml(z, 'day')}${cellHtml(z, 'night')}`).join('');
     $('#zonecfg').innerHTML = data.zones.length ? `<div class="zgrid">${head}${rows}</div>` : '<em>no zones known yet</em>';
     grid = $('#zonecfg .zgrid');
     if (!grid) return;
@@ -205,7 +220,12 @@ function renderZoneCfg() {
       if (e.target.value) post({zones: {[i.dataset.e]: {[i.dataset.f]: e.target.value}}});
     });
   }
-  for (const z of data.zones) for (const period of ['day', 'night']) paintCell(z, period);
+  const temps = Object.fromEntries((((data.state || {}).last_eval || {}).zones || []).map(z => [z.entity, z.rt]));
+  for (const z of data.zones) {
+    const t = temps[z.entity];
+    $(`#zonecfg .ztemp[data-e="${CSS.escape(z.entity)}"]`).innerHTML = t == null ? '–' : `${t}<small>°F now</small>`;
+    for (const period of ['day', 'night']) paintCell(z, period);
+  }
 }
 function paintCell(z, period) {
   const key = `${z.entity}|${period}`;
@@ -275,13 +295,17 @@ function startDrag(e) {
   e.preventDefault();
 }
 function paintSlider(key, v) {
-  const slider = document.querySelector(`#zonecfg .slider[data-k="${CSS.escape(key)}"]`);
-  if (!slider) return;
-  slider.querySelector('.fill').style.left = pct(v.lo);
-  slider.querySelector('.fill').style.width = `calc(${pct(v.hi)} - ${pct(v.lo)})`;
-  for (const f of ['lo', 'd', 'hi']) slider.querySelector(`.mark.${f}`).style.left = pct(v[f]);
-  const dv = slider.querySelector('.dval'); dv.style.left = pct(v.d); dv.textContent = v.d;
-  const ends = slider.parentElement.querySelectorAll('.end'); ends[0].textContent = v.lo; ends[1].textContent = v.hi;
+  const range = document.querySelector(`#zonecfg .slider.range[data-k="${CSS.escape(key)}"]`);
+  const target = document.querySelector(`#zonecfg .slider.target[data-k="${CSS.escape(key)}"]`);
+  if (!range || !target) return;
+  const bandCss = el => { el.style.left = pct(v.lo); el.style.width = `calc(${pct(v.hi)} - ${pct(v.lo)})`; };
+  bandCss(range.querySelector('.fill'));
+  range.querySelector('.mark.lo').style.left = pct(v.lo);
+  range.querySelector('.mark.hi').style.left = pct(v.hi);
+  const ends = range.parentElement.querySelectorAll('.end'); ends[0].textContent = v.lo; ends[1].textContent = v.hi;
+  bandCss(target.querySelector('.band'));
+  target.querySelector('.mark.d').style.left = pct(v.d);
+  const dv = target.querySelector('.dval'); dv.style.left = pct(v.d); dv.textContent = v.d;
 }
 
 function render() {
