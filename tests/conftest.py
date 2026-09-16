@@ -4,6 +4,7 @@ recording applier, and a ready-to-tick ControlLoop."""
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,9 +42,9 @@ class FakeStore:
     """Stands in for db.Store: the loop only needs serials(), zones() and latest()."""
 
     def __init__(self, zones: list[tuple[str, str]] | None = None) -> None:
-        self.values: dict[tuple[str, str], Any] = {
-            ("system", "mode"): "heat", ("system", "oat"): 74.0, ("config", "cfgdead"): 2.0,
-        }
+        self.values: dict[tuple[str, str], Any] = {}
+        self.history: list[tuple[float, str, str, Any]] = []   # every value ever set, like the readings table
+        self.set("system", "mode", "heat"); self.set("system", "oat", 74.0); self.set("config", "cfgdead", 2.0)
         self._zones = zones or [("zone:1", "Boys"), ("zone:2", "1st")]
         for entity, _ in self._zones:
             self.set_zone(entity, rt=70.0, htsp=70.0, clsp=72.0, hold="on")
@@ -57,16 +58,20 @@ class FakeStore:
     def latest(self, serial: str, entity: str, field: str) -> Any:
         return self.values.get((entity, field))
 
+    def seen_since(self, serial: str, entity: str, field: str, since: float) -> set[Any]:
+        return {v for ts, e, f, v in self.history if e == entity and f == field and ts >= since}
+
     def set_zone(self, entity: str, **fields: Any) -> None:
         for k, v in fields.items():
-            self.values[(entity, k)] = v
+            self.set(entity, k, v)
 
     def set(self, entity: str, field: str, value: Any) -> None:
         self.values[(entity, field)] = value
+        self.history.append((time.time(), entity, field, value))
 
     def mirror(self, desired: dict) -> None:
         """Pretend the thermostat applied a controller write."""
-        self.values[("system", "mode")] = desired["mode"]
+        self.set("system", "mode", desired["mode"])
         for entity, sp in desired["zones"].items():
             self.set_zone(entity, htsp=sp["htsp"], clsp=sp["clsp"], hold="on")
 
@@ -77,11 +82,13 @@ class RecApplier:
     def __init__(self, dry_run: bool = False, fail_on: set[int] | None = None, mirror: FakeStore | None = None) -> None:
         self.dry_run = dry_run
         self.calls: list[dict] = []
+        self.previous: list[dict | None] = []   # what the loop said the thermostat already showed
         self.fail_on = fail_on or set()
         self.mirror = mirror
 
     async def apply(self, serial: str, desired: dict, previous: dict | None) -> list[str]:
         self.calls.append(desired)
+        self.previous.append(previous)
         if len(self.calls) in self.fail_on:
             raise RuntimeError("504 Gateway Timeout")
         if self.mirror is not None:

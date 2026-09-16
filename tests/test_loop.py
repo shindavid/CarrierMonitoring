@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from carriermon.control import PERSIST, ControlLoop
+from carriermon.control import MAX_WRITE_ATTEMPTS, PERSIST, ControlLoop
 from carriermon.controldb import ControlStore
 
 from conftest import FakeStore, RecApplier, make_settings, tick
@@ -283,6 +283,140 @@ class TestWriteFailures:
         asyncio.run(two_ticks())
         assert any(m.startswith("RuntimeError: database is locked") for m in events(control, "error"))
         assert events(control, "start")
+
+
+class DropApplier(RecApplier):
+    """Mirrors a write except that the thermostat 'ignores' one zone's heat setpoint
+    on the listed call numbers, the way Carrier drops a field from a burst."""
+
+    def __init__(self, store: FakeStore, drop_on: set[int], zone: str = "zone:2") -> None:
+        super().__init__(mirror=store)
+        self.drop_on, self.zone = drop_on, zone
+
+    async def apply(self, serial, desired, previous):
+        self.calls.append(desired); self.previous.append(previous)
+        drop = len(self.calls) in self.drop_on
+        self.mirror.set("system", "mode", desired["mode"])
+        for entity, sp in desired["zones"].items():
+            fields = {"htsp": sp["htsp"], "clsp": sp["clsp"], "hold": "on"}
+            if drop and entity == self.zone:
+                del fields["htsp"]           # the thermostat never shows this one
+            self.mirror.set_zone(entity, **fields)
+        return ["ok"]
+
+
+class TestDroppedWrites:
+    """Carrier's API says OK but the thermostat never shows part of the write."""
+
+    def _loop(self, settings, control, fake_store, applier):
+        lp = ControlLoop(settings, fake_store, control, applier, serial="X")  # type: ignore[arg-type]
+        lp.grace = 0
+        # Thermostat starts away from the target so the first write actually changes it.
+        for z in ("zone:1", "zone:2"):
+            fake_store.set_zone(z, htsp=66.0, clsp=68.0)
+        control.set_enabled(True)
+        return lp
+
+    def test_dropped_field_is_rewritten_not_treated_as_override(self, settings, control, fake_store):
+        applier = DropApplier(fake_store, drop_on={1})
+        lp = self._loop(settings, control, fake_store, applier)
+        tick(lp)                                  # write; 1st's heat setpoint stays 66
+        assert fake_store.latest("X", "zone:2", "htsp") == 66.0
+        tick(lp)                                  # never seen 70 -> retry, not a manual override
+        assert control.settings()["enabled"] is True and control.state()["override"] is None
+        assert len(applier.calls) == 2 and control.state()["write_attempts"] == 2
+        assert events(control, "retry") == [
+            f"write not applied (attempt 1 of {MAX_WRITE_ATTEMPTS}): 1st heat setpoint is 66.0, expected 70;"
+            " rewriting what is missing"]
+        # The retry diffs against what the thermostat shows: Boys is skipped, 1st is sent.
+        prev = applier.previous[-1]
+        assert prev["mode"] == "heat" and prev["zones"]["zone:1"] == {"name": "Boys", "htsp": 70.0, "clsp": 72.0}
+        assert prev["zones"]["zone:2"] == {"name": "1st", "htsp": 66.0, "clsp": 72.0}
+        tick(lp)                                  # now it shows
+        assert events(control, "write")[-1] == "thermostat now shows what was written (took 2 attempts)"
+        assert control.state()["write_attempts"] == 1
+        tick(lp)
+        assert len(applier.calls) == 2            # quiet again
+
+    def test_gives_up_after_max_attempts_with_an_honest_reason(self, settings, control, fake_store):
+        applier = DropApplier(fake_store, drop_on=set(range(1, 10)))
+        lp = self._loop(settings, control, fake_store, applier)
+        for _ in range(MAX_WRITE_ATTEMPTS):
+            tick(lp)
+        assert control.settings()["enabled"] is True and len(applier.calls) == MAX_WRITE_ATTEMPTS
+        tick(lp)
+        assert control.settings()["enabled"] is False
+        st = control.state()
+        assert st["override"] == (f"thermostat did not apply the controller's settings after {MAX_WRITE_ATTEMPTS}"
+                                  " attempts (1st heat setpoint is 66.0, expected 70)")
+        assert st["expected"] is None and st["write_attempts"] is None and st["mode"] is None
+        assert events(control, "override")[-1].startswith("write never applied, controller switched off")
+        assert not any(m.startswith("manual change") for m in events(control, "override"))
+
+    def test_human_change_after_a_dropped_field_still_trips(self, settings, control, fake_store):
+        applier = DropApplier(fake_store, drop_on={1})
+        lp = self._loop(settings, control, fake_store, applier)
+        tick(lp)
+        fake_store.set_zone("zone:1", clsp=75.0)  # Boys did take the write, then someone moved it
+        tick(lp)
+        assert control.settings()["enabled"] is False
+        assert control.state()["override"] == "Boys cool setpoint is 75.0, expected 72; 1st heat setpoint is 66.0, expected 70"
+
+    def test_newer_target_supersedes_an_unconfirmed_write(self, settings, control, fake_store):
+        applier = DropApplier(fake_store, drop_on={1})
+        lp = self._loop(settings, control, fake_store, applier)
+        tick(lp)                                  # target A: 1st heat 70, dropped
+        control.update_zone("zone:2", day_d=71, night_d=71)   # rules now want target B for 1st
+        tick(lp)
+        st = control.state()
+        assert st["expected"]["zones"]["zone:2"] == {"name": "1st", "htsp": 71.0, "clsp": 73.0}
+        assert st["write_attempts"] == 1          # confirmation restarts against B, not A
+        assert applier.calls[-1]["zones"]["zone:2"]["htsp"] == 71.0
+        assert applier.previous[-1]["zones"]["zone:2"]["htsp"] == 66.0   # diffed against live, so 1st is sent
+        assert fake_store.latest("X", "zone:2", "htsp") == 71.0
+        tick(lp)                                  # B confirmed; A is never chased again
+        assert control.state()["override"] is None and len(applier.calls) == 2
+        assert events(control, "retry") == [
+            f"write not applied (attempt 1 of {MAX_WRITE_ATTEMPTS}): 1st heat setpoint is 66.0, expected 70;"
+            " rewriting what is missing"]
+
+    def test_dropped_then_newer_target_also_dropped_counts_from_one(self, settings, control, fake_store):
+        applier = DropApplier(fake_store, drop_on={1, 2})
+        lp = self._loop(settings, control, fake_store, applier)
+        tick(lp)                                  # A, dropped
+        control.update_zone("zone:2", day_d=71, night_d=71)
+        tick(lp)                                  # B, dropped too: attempt 1 of B
+        assert control.state()["write_attempts"] == 1
+        tick(lp)                                  # attempt 2 of B lands
+        assert control.state()["write_attempts"] == 2 and fake_store.latest("X", "zone:2", "htsp") == 71.0
+        tick(lp)
+        assert control.settings()["enabled"] is True and control.state()["write_attempts"] == 1
+
+    def test_enable_sends_only_what_differs_from_live(self, loop, control, applier, fake_store):
+        control.set_enabled(True)
+        tick(loop)                                # thermostat already at 70/72 heat, hold on
+        assert applier.previous[-1] == {"mode": "heat", "zones": {
+            "zone:1": {"name": "Boys", "htsp": 70.0, "clsp": 72.0},
+            "zone:2": {"name": "1st", "htsp": 70.0, "clsp": 72.0}}}
+        assert events(control, "write") == ["wrote 2 zones, mode heat"]  # RecApplier ignores previous
+
+    def test_zone_without_hold_is_sent_in_full(self, loop, control, applier, fake_store):
+        fake_store.set_zone("zone:2", hold="off")
+        control.set_enabled(True)
+        tick(loop)
+        assert "zone:2" not in applier.previous[-1]["zones"] and "zone:1" in applier.previous[-1]["zones"]
+
+    def test_failed_write_resets_attempts(self, settings, control, fake_store):
+        applier = RecApplier(fail_on={2}, mirror=fake_store)
+        lp = ControlLoop(settings, fake_store, control, applier, serial="X")  # type: ignore[arg-type]
+        lp.grace = 0
+        control.set_enabled(True)
+        tick(lp)
+        fake_store.set_zone("zone:2", rt=73.0)
+        tick(lp)                                  # raises
+        assert control.state()["write_attempts"] is None
+        tick(lp)
+        assert control.state()["write_attempts"] == 1
 
 
 class TestEvalSnapshot:

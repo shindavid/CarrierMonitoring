@@ -108,10 +108,10 @@ class TestState:
         assert st["dry_run"] is True and time.time() - st["loop_alive_ts"] < 5
 
     def test_trip_override_forgets_expectations(self, control: ControlStore):
-        control.set_state(expected={"mode": "cool", "zones": {}}, written_ts=1.0)
+        control.set_state(expected={"mode": "cool", "zones": {}}, written_ts=1.0, write_attempts=2)
         control.trip_override("mode is auto")
         st = control.state()
-        assert st["expected"] is None and st["written_ts"] is None
+        assert st["expected"] is None and st["written_ts"] is None and st["write_attempts"] is None
         assert st["override"] == "mode is auto" and st["override_ts"] is not None
 
 
@@ -165,6 +165,7 @@ class TestMigrations:
         assert cs.settings()["enabled"] is True          # kept
         assert cs.state()["mode"] == "cool"              # kept
         assert cs.state()["lean_side"] is None           # column added
+        assert cs.state()["write_attempts"] is None      # column added
 
     def test_legacy_zone_rows_get_a_desired_temp(self, tmp_path: Path):
         path = tmp_path / "ranges.sqlite"

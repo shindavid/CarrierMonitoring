@@ -20,9 +20,18 @@ temp, O = outdoor):
   3. otherwise keep the current mode.
 
 Manual overrides: the loop remembers exactly what it wrote (mode, per-zone
-setpoints, hold). If the live state stops matching after a grace period, someone
-changed something at the thermostat or in the Carrier app; the controller then
-switches itself off and stays off until re-enabled from the control page.
+setpoints, hold). If the live state does not match after a grace period, the
+readings history decides what happened. A value the thermostat showed at some
+point since the write and then moved away from was changed by someone at the
+thermostat or in the Carrier app; the controller then switches itself off and
+stays off until re-enabled from the control page. A value the thermostat never
+showed is a write Carrier accepted but the thermostat did not apply (this happens
+a few percent of the time, usually to one setpoint of a burst); the loop rewrites
+just the parts that are missing, up to MAX_WRITE_ATTEMPTS, and only then gives up
+and switches off. If the rules pick new setpoints while a write is still
+unconfirmed, the new target simply replaces the old one: confirmation is always
+judged against the most recent write, and every write sends whatever the
+thermostat does not currently show, so nothing from a dropped write is skipped.
 
 Hosting: in the production checkout the loop runs inside ``carriermon ingest``
 (it already holds the Carrier session). ``carriermon control`` runs the same loop
@@ -47,6 +56,7 @@ log = logging.getLogger(__name__)
 MARGIN = 1.0      # outdoor must be more than this beyond every zone temp to count as "outside"
 PERSIST = 5 * 60  # seconds a whole-house lean must hold before it changes the mode
 DEFAULT_GAP = 2.0 # thermostat deadband if config doesn't say
+MAX_WRITE_ATTEMPTS = 3  # rewrites of one target the thermostat keeps ignoring before giving up
 
 
 # ---------------------------------------------------------------- decision
@@ -156,11 +166,19 @@ def read_live(store: Store, serial: str) -> Live:
     )
 
 
-def mismatches(live: Live, expected: dict) -> list[str]:
-    """Differences between what we wrote and what the thermostat reports now."""
+@dataclass(frozen=True)
+class Mismatch:
+    entity: str      # "system" for the mode, else the zone entity
+    field: str       # mode | htsp | clsp | hold
+    want: Any
+    message: str
+
+
+def mismatch_items(live: Live, expected: dict) -> list[Mismatch]:
+    """Every field where the thermostat reports something other than what we wrote."""
     out = []
     if live.mode != expected["mode"]:
-        out.append(f"mode is {live.mode}, expected {expected['mode']}")
+        out.append(Mismatch("system", "mode", expected["mode"], f"mode is {live.mode}, expected {expected['mode']}"))
     by_entity = {z["entity"]: z for z in live.zones}
     for entity, want in expected["zones"].items():
         z = by_entity.get(entity)
@@ -169,10 +187,25 @@ def mismatches(live: Live, expected: dict) -> list[str]:
         for field, label in (("htsp", "heat setpoint"), ("clsp", "cool setpoint")):
             have = z[field]
             if not isinstance(have, (int, float)) or abs(have - want[field]) > 0.01:
-                out.append(f"{z['name']} {label} is {have}, expected {want[field]:g}")
+                out.append(Mismatch(entity, field, want[field],
+                                    f"{z['name']} {label} is {have}, expected {want[field]:g}"))
         if z["hold"] != "on":
-            out.append(f"{z['name']} hold is {z['hold']}, expected on")
+            out.append(Mismatch(entity, "hold", "on", f"{z['name']} hold is {z['hold']}, expected on"))
     return out
+
+
+def mismatches(live: Live, expected: dict) -> list[str]:
+    """Differences between what we wrote and what the thermostat reports now."""
+    return [m.message for m in mismatch_items(live, expected)]
+
+
+def live_as_previous(live: Live) -> dict:
+    """The thermostat's current state in the shape of a write, for the applier to
+    diff against: it then sends only what the thermostat does not already show. A
+    zone without hold on is left out so it is written in full (setpoints and hold)."""
+    return {"mode": live.mode, "zones": {
+        z["entity"]: {"name": z["name"], "htsp": z["htsp"], "clsp": z["clsp"]}
+        for z in live.zones if z["hold"] == "on"}}
 
 
 # ---------------------------------------------------------------- appliers
@@ -268,8 +301,8 @@ class ControlLoop:
         if not cfg["enabled"]:
             if state["expected"] is not None:
                 # Switched off from the UI: leave the thermostat as it is, forget our claim on it.
-                self.control.set_state(expected=None, written_ts=None, mode=None, mode_since=None, rule=None,
-                                       lean_side=None, lean_since=None)
+                self.control.set_state(expected=None, written_ts=None, write_attempts=None, mode=None,
+                                       mode_since=None, rule=None, lean_side=None, lean_since=None)
                 self.control.log("disabled", "controller switched off; thermostat left as is")
             return
 
@@ -279,20 +312,38 @@ class ControlLoop:
             return
         live = read_live(self.store, serial)
 
-        # -- override detection: does the thermostat still show what we wrote? --
-        if state["expected"] is not None and state["written_ts"] and now - state["written_ts"] > self.grace:
-            diffs = mismatches(live, state["expected"])
-            if diffs:
-                reason = "; ".join(diffs)
+        # -- override detection: does the thermostat show what we wrote? --
+        expected = state["expected"]
+        attempts = state["write_attempts"] or 0
+        retry = False  # rewrite the current target this tick because the thermostat never took it
+        if expected is not None and state["written_ts"]:
+            items = mismatch_items(live, expected)
+            if not items:
+                if attempts > 1:
+                    self.control.log("write", f"thermostat now shows what was written (took {attempts} attempts)")
+                    self.control.set_state(write_attempts=1)
+            elif now - state["written_ts"] > self.grace:
+                reason = "; ".join(m.message for m in items)
                 if self.applier.dry_run:
                     # Nothing was really written, so live can never match: report, don't trip.
                     if state["last_eval"] and state["last_eval"].get("mismatch") != reason:
                         self.control.log("override", f"(dry run) would switch off: {reason}")
-                else:
+                elif self.ever_applied(serial, items, state["written_ts"]):
+                    # The thermostat did show it and then moved: a person changed it.
                     self.control.trip_override(reason)
                     self.control.log("override", f"manual change detected, controller switched off: {reason}")
                     self.control.set_state(mode=None, mode_since=None, rule=None)
                     return
+                elif attempts >= MAX_WRITE_ATTEMPTS:
+                    why = f"thermostat did not apply the controller's settings after {attempts} attempts ({reason})"
+                    self.control.trip_override(why)
+                    self.control.log("override", f"write never applied, controller switched off: {reason}")
+                    self.control.set_state(mode=None, mode_since=None, rule=None)
+                    return
+                else:
+                    retry = True
+                    self.control.log("retry", f"write not applied (attempt {attempts} of {MAX_WRITE_ATTEMPTS}): "
+                                              f"{reason}; rewriting what is missing")
 
         # -- decide --
         # Each zone's desired temp and tolerable range for right now (its own day/night schedule).
@@ -338,25 +389,29 @@ class ControlLoop:
             return {"htsp": ev.d, "clsp": ev.d + live.gap}
         desired = {"mode": mode, "zones": {
             z["entity"]: {"name": z["name"], **sp(ev)} for z, ev in zip(live.zones, evals)}}
-        expected = state["expected"]
-        if expected is not None and expected["mode"] == mode and expected["zones"] == desired["zones"]:
+        new_target = expected is None or expected["mode"] != mode or expected["zones"] != desired["zones"]
+        if not new_target and not retry:
             pass  # nothing to do
         else:
+            # Diff against what the thermostat shows, not against what we last sent:
+            # a dropped field from an earlier write is then written again, and a
+            # retry sends only the parts still missing.
             try:
-                writes = await self.applier.apply(serial, desired, expected)
+                writes = await self.applier.apply(serial, desired, live_as_previous(live))
             except Exception as exc:  # noqa: BLE001 - Carrier's API times out now and then
                 # Some of the batch may have landed, so what the thermostat holds is now
                 # unknown. Forget our claim on it (no override check against stale
                 # expectations) and rewrite everything next tick.
-                self.control.set_state(expected=None, written_ts=now, mode=mode, rule=rule)
+                self.control.set_state(expected=None, written_ts=now, write_attempts=None, mode=mode, rule=rule)
                 self.control.log("error", f"write failed, will retry next check: {type(exc).__name__}: {exc}")
                 log.warning("control write failed: %s", exc)
                 return
             for w in writes:
                 self.control.log("write", w)
             mode_changed = expected is None or expected["mode"] != mode
+            # A new target supersedes an unconfirmed one: confirmation restarts against it.
             fields: dict[str, Any] = {"expected": desired, "written_ts": now, "applied_settings_ts": cfg["updated_ts"],
-                                      "mode": mode, "rule": rule}
+                                      "write_attempts": 1 if new_target else attempts + 1, "mode": mode, "rule": rule}
             if mode_changed:
                 fields["mode_since"] = now
                 self.control.log("mode", f"{'(dry run) ' if self.applier.dry_run else ''}mode → {mode}: {rule}")
@@ -375,6 +430,19 @@ class ControlLoop:
             "mode": mode, "rule": rule,
             "mismatch": "; ".join(mismatches(live, state["expected"])) if state["expected"] else None,
         })
+
+    def ever_applied(self, serial: str, items: list[Mismatch], since: float) -> bool:
+        """Did the thermostat report any of these wanted values at some point since the
+        write? Then it took the write and someone changed it afterwards. False when
+        nothing we wrote was ever seen: the write did not land."""
+        for m in items:
+            seen = self.store.seen_since(serial, m.entity, m.field, since)
+            if isinstance(m.want, (int, float)):
+                if any(isinstance(v, (int, float)) and abs(v - m.want) <= 0.01 for v in seen):
+                    return True
+            elif m.want in seen:
+                return True
+        return False
 
 
 async def run_standalone(settings: Settings) -> None:

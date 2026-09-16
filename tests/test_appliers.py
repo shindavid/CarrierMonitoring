@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from carriermon.control import (CarrierApplier, DryRunApplier, Live, _fmt, describe_writes, mismatches,
-                                read_live)
+from carriermon.control import (CarrierApplier, DryRunApplier, Live, _fmt, describe_writes, live_as_previous,
+                                mismatch_items, mismatches, read_live)
 
 from conftest import populate_readings
 
@@ -50,6 +50,32 @@ class TestMismatches:
         lv = live()
         lv.zones = lv.zones[:1]
         assert mismatches(lv, DESIRED) == []
+
+
+class TestMismatchItems:
+    def test_items_name_entity_field_and_wanted_value(self):
+        items = mismatch_items(live(mode="heat", **{"zone:1": {"htsp": 69.0, "hold": "off"}}), DESIRED)
+        assert [(m.entity, m.field, m.want) for m in items] == [
+            ("system", "mode", "cool"), ("zone:1", "htsp", 68.0), ("zone:1", "hold", "on")]
+        assert [m.message for m in items] == mismatches(live(mode="heat", **{"zone:1": {"htsp": 69.0, "hold": "off"}}), DESIRED)
+
+
+class TestLiveAsPrevious:
+    def test_matching_live_makes_every_write_a_noop(self):
+        prev = live_as_previous(live())
+        assert prev == {"mode": "cool", "zones": {
+            "zone:1": {"name": "Boys", "htsp": 68.0, "clsp": 70.0},
+            "zone:2": {"name": "1st", "htsp": 66.0, "clsp": 68.0}}}
+        assert describe_writes(DESIRED, prev) == []
+
+    def test_only_the_differing_parts_are_written(self):
+        prev = live_as_previous(live(mode="heat", **{"zone:2": {"htsp": 60.0}}))
+        assert describe_writes(DESIRED, prev) == ["1st: heat 66 / cool 68, hold on", "mode cool"]
+
+    def test_zone_without_hold_is_written_in_full(self):
+        prev = live_as_previous(live(**{"zone:1": {"hold": "off"}}))
+        assert "zone:1" not in prev["zones"]
+        assert describe_writes(DESIRED, prev) == ["Boys: heat 68 / cool 70, hold on"]
 
 
 class TestDescribeWrites:

@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS control_state (
     rule                TEXT,     -- the rule that chose it
     expected            TEXT,     -- JSON: what we last wrote (mode + per-zone setpoints); NULL = nothing written
     written_ts          REAL,     -- when `expected` was written (override grace period starts here)
+    write_attempts      INTEGER,  -- times `expected` has been written without the thermostat showing it
     applied_settings_ts REAL,     -- control_settings.updated_ts that `expected` was built from
     last_decision_mode  TEXT,     -- last mode the rules asked for (to log decisions only on change)
     last_eval_ts        REAL,
@@ -108,7 +109,7 @@ class ControlStore:
                 for period in ("day", "night"):
                     self.conn.execute(f"ALTER TABLE control_zones ADD COLUMN {period}_d REAL NOT NULL DEFAULT 70")
                     self.conn.execute(f"UPDATE control_zones SET {period}_d = ({period}_lo + {period}_hi) / 2")
-            for column in ("lean_side TEXT", "lean_since REAL"):
+            for column in ("lean_side TEXT", "lean_since REAL", "write_attempts INTEGER"):
                 if column.split()[0] not in state_cols:
                     self.conn.execute(f"ALTER TABLE control_state ADD COLUMN {column}")
         self.conn.row_factory = sqlite3.Row
@@ -193,12 +194,14 @@ class ControlStore:
         self.set_state(loop_alive_ts=time.time(), dry_run=int(dry_run))
 
     def trip_override(self, reason: str) -> None:
-        """A human changed something we own: switch off and remember why."""
+        """Switch off and remember why: a human changed something we own, or the
+        thermostat would not take what we wrote."""
         now = time.time()
         with self.conn:
             self.conn.execute("UPDATE control_settings SET enabled=0, updated_ts=? WHERE id=1", (now,))
             self.conn.execute(
-                "UPDATE control_state SET override=?, override_ts=?, expected=NULL, written_ts=NULL WHERE id=1",
+                "UPDATE control_state SET override=?, override_ts=?, expected=NULL, written_ts=NULL,"
+                " write_attempts=NULL WHERE id=1",
                 (reason, now),
             )
 

@@ -171,6 +171,16 @@ class Store:
             return None
         return row["value_num"] if row["value_num"] is not None else row["value_text"]
 
+    def seen_since(self, serial: str, entity: str, field: str, since: float) -> set[Any]:
+        """Every distinct value one field has reported at or after ``since`` (ws pushes
+        and polls both land here), so a caller can tell "was briefly X, then changed"
+        from "never showed X"."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT value_num, value_text FROM readings WHERE serial=? AND entity=? AND field=? AND ts>=?",
+            (serial, entity, field, since),
+        )
+        return {r["value_num"] if r["value_num"] is not None else r["value_text"] for r in rows}
+
     def serials(self) -> list[str]:
         return [r[0] for r in self.conn.execute("SELECT DISTINCT serial FROM readings")]
 
