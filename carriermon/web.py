@@ -8,7 +8,7 @@ import urllib.parse
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from .auth import (SESSION_TTL, HomeDetector, client_ip, load_secret, session_needs_refresh, sign_session,
@@ -65,6 +65,11 @@ def create_app(settings: Settings) -> FastAPI:
     home = HomeDetector(settings.home_networks, settings.public_ip_url, settings.public_ip6_url)
     env_admin = (settings.auth_user, settings.auth_password) if settings.auth_user and settings.auth_password else None
     COOKIE = "carriermon_session"
+    # Home-screen app assets: the browser fetches the manifest and icons WITHOUT the
+    # session cookie, and the service worker script must load before anyone is logged in,
+    # so these are served without auth. They reveal nothing sensitive.
+    PUBLIC_PATHS = {"/login", "/logout", "/manifest.webmanifest", "/sw.js",
+                    "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"}
 
     def auth_enabled() -> bool:
         return env_admin is not None or control.has_users()
@@ -115,7 +120,7 @@ def create_app(settings: Settings) -> FastAPI:
         """Every request: must be logged in, and a standard user must be at home — for
         pages and API alike. Admins pass from anywhere."""
         request.state.user, request.state.role = None, "admin"   # open server: everyone is admin
-        if auth_enabled() and request.url.path not in ("/login", "/logout"):
+        if auth_enabled() and request.url.path not in PUBLIC_PATHS:
             api = request.url.path.startswith("/api/")
             session = verify_session(secret, request.cookies.get(COOKIE, ""))
             if session is None:
@@ -161,6 +166,47 @@ def create_app(settings: Settings) -> FastAPI:
         if settings.dev:
             html = html.replace('<html lang="en">', '<html lang="en" data-env="dev">', 1)
         return HTMLResponse(html)
+
+    # -- home-screen app (PWA) ---------------------------------------------------
+    # The control page installs to an iPhone/Android home screen as a standalone app.
+    # Icons come in a red (prod) and amber (dev) set, mirroring the page's chrome.
+    def _asset(name: str) -> str:
+        """Dev checkout serves the amber '-dev' variant of an icon; prod the plain one."""
+        stem, ext = name.rsplit(".", 1)
+        return f"{stem}{'-dev' if settings.dev else ''}.{ext}"
+
+    @app.get("/manifest.webmanifest")
+    def manifest() -> Response:
+        theme = "#d97706" if settings.dev else "#e6503c"
+        data = {
+            "name": ("DEV — " if settings.dev else "") + "Carrier Control",
+            "short_name": ("DEV " if settings.dev else "") + "Control",
+            "description": "Heat/cool controller for the home HVAC system.",
+            "start_url": "/control", "scope": "/", "display": "standalone",
+            "orientation": "portrait", "background_color": "#141518", "theme_color": theme,
+            "icons": [
+                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            ],
+        }
+        return JSONResponse(data, media_type="application/manifest+json")
+
+    @app.get("/sw.js")
+    def service_worker() -> Response:
+        return FileResponse(STATIC / "sw.js", media_type="text/javascript",
+                            headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
+
+    @app.get("/icon-192.png")
+    def icon_192() -> Response:
+        return FileResponse(STATIC / _asset("icon-192.png"), media_type="image/png")
+
+    @app.get("/icon-512.png")
+    def icon_512() -> Response:
+        return FileResponse(STATIC / _asset("icon-512.png"), media_type="image/png")
+
+    @app.get("/apple-touch-icon.png")
+    def apple_touch_icon() -> Response:
+        return FileResponse(STATIC / _asset("apple-touch-icon.png"), media_type="image/png")
 
     def control_zones() -> list[dict]:
         """Enabled zones (from the readings) with their control ranges."""

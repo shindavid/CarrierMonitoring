@@ -214,6 +214,23 @@ class TestAccounts:
         assert me["user"] is None and me["role"] == "admin" and me["can_edit"] is True
 
 
+class TestPwaAssets:
+    def test_manifest_and_icons_served(self, client: TestClient):
+        m = client.get("/manifest.webmanifest")
+        assert m.status_code == 200 and m.headers["content-type"].startswith("application/manifest+json")
+        assert m.json()["start_url"] == "/control"
+        for path in ("/sw.js", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"):
+            assert client.get(path).status_code == 200
+
+    def test_assets_are_public_when_auth_is_on(self, tmp_path: Path):
+        populate_readings(tmp_path / "readings.sqlite")
+        ControlStore(tmp_path / "control.sqlite").add_user("d", "pw", "admin")
+        c = TestClient(create_app(make_settings(tmp_path, dev=False)), follow_redirects=False)
+        for path in ("/manifest.webmanifest", "/sw.js", "/icon-192.png", "/apple-touch-icon.png"):
+            assert c.get(path).status_code == 200          # no login needed for install assets
+        assert c.get("/control").status_code == 303        # the page itself still requires login
+
+
 class TestSessionLifetime:
     def test_cookie_is_long_lived_and_slides(self, tmp_path: Path):
         from carriermon.auth import SESSION_REFRESH_AFTER, SESSION_TTL, load_secret, sign_session

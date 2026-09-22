@@ -2,19 +2,30 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Carrier Control</title>
 <link id="favicon" rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%23e6503c'/></svg>">
+<!-- Home-screen app: installs standalone with its own icon (see /manifest.webmanifest). -->
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta id="themecolor" name="theme-color" content="#e6503c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta id="apptitle" name="apple-mobile-web-app-title" content="Control">
 <style>
   :root { color-scheme: light dark; --fg:#222; --bg:#fff; --muted:#777; --card:#f6f6f8; --line:#ddd;
           --on:#16a34a; --off:#6b7280; --heat:#e63c1e; --cool:#2860e6; --warn:#b45309; --warnbg:#fef3c7; --bad:#b91c1c; --badbg:#fee2e2; }
   @media (prefers-color-scheme: dark) { :root { --fg:#e6e6e6; --bg:#141518; --muted:#999; --card:#1e2024; --line:#333;
           --warnbg:#3b2a08; --bad:#fca5a5; --badbg:#3f1212; } }
   body { margin:0; font:16px/1.45 system-ui, sans-serif; color:var(--fg); background:var(--bg); }
-  header { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center; padding:.6rem 1rem; border-bottom:1px solid var(--line); }
+  /* Standalone (home-screen) launch draws under the status bar with viewport-fit=cover;
+     keep the header clear of the notch and the page clear of the home indicator. */
+  header { display:flex; flex-wrap:wrap; gap:.4rem 1rem; align-items:center;
+           padding:calc(.6rem + env(safe-area-inset-top)) 1rem .6rem; border-bottom:1px solid var(--line); }
   header h1 { font-size:1.1rem; margin:0; }
   header a { color:var(--muted); text-decoration:none; }
-  main { max-width:680px; margin:0 auto; padding:.8rem; display:grid; gap:.8rem; }
+  main { max-width:680px; margin:0 auto; padding:.8rem .8rem calc(.8rem + env(safe-area-inset-bottom)); display:grid; gap:.8rem; }
   .card { padding:.8rem 1rem; background:var(--card); border-radius:10px; }
   .card h2 { font-size:.85rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 .5rem; }
   button { font:inherit; padding:.5rem .9rem; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); cursor:pointer; }
@@ -68,7 +79,7 @@
   .periodsel button { flex:1; padding:.4rem; color:var(--muted); }
   .periodsel button.on { background:var(--fg); color:var(--bg); border-color:var(--fg); }
   @media (max-width: 560px) {
-    main { padding:.5rem; }
+    main { padding:.5rem .5rem calc(.5rem + env(safe-area-inset-bottom)); }
     .card { padding:.6rem .7rem; }
     .periodsel { display:flex; }
     .zgrid { grid-template-columns:auto 1fr; gap:.4rem .5rem; align-items:center; }
@@ -159,7 +170,11 @@ const $ = s => document.querySelector(s);
 if (document.documentElement.dataset.env === 'dev') {
   document.title = 'DEV — ' + document.title;
   $('#favicon').href = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%23d97706'/><text x='16' y='22' font-size='18' font-family='sans-serif' font-weight='bold' fill='%23fff' text-anchor='middle'>D</text></svg>";
+  $('#themecolor').content = '#d97706';
+  $('#apptitle').content = 'DEV Control';
 }
+// Register the service worker (makes the page installable and enables push).
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
 let data = null;
 let mobilePeriod = null;   // which period the phone layout shows; null = pick the active one
