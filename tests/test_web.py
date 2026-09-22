@@ -231,6 +231,28 @@ class TestPwaAssets:
         assert c.get("/control").status_code == 303        # the page itself still requires login
 
 
+class TestPush:
+    def test_config_off_without_keys(self, client: TestClient):
+        assert client.get("/api/push/config").json() == {"enabled": False, "vapid_public_key": None}
+
+    def test_config_on_with_keys(self, tmp_path: Path):
+        populate_readings(tmp_path / "readings.sqlite")
+        c = TestClient(create_app(make_settings(tmp_path, vapid_public_key="PUB", vapid_private_key="PRIV")))
+        assert c.get("/api/push/config").json() == {"enabled": True, "vapid_public_key": "PUB"}
+
+    def test_subscribe_stores_and_unsubscribe_removes(self, tmp_path: Path):
+        populate_readings(tmp_path / "readings.sqlite")
+        c = TestClient(create_app(make_settings(tmp_path)))
+        sub = {"endpoint": "https://push/x", "keys": {"p256dh": "k", "auth": "a"}}
+        assert c.post("/api/push/subscribe", json=sub).json() == {"ok": True}
+        assert ControlStore(tmp_path / "control.sqlite").list_subscriptions()[0]["endpoint"] == "https://push/x"
+        assert c.post("/api/push/unsubscribe", json={"endpoint": "https://push/x"}).json() == {"ok": True}
+        assert ControlStore(tmp_path / "control.sqlite").list_subscriptions() == []
+
+    def test_malformed_subscription_is_400(self, client: TestClient):
+        assert client.post("/api/push/subscribe", json={"endpoint": "x", "keys": {}}).status_code == 400
+
+
 class TestSessionLifetime:
     def test_cookie_is_long_lived_and_slides(self, tmp_path: Path):
         from carriermon.auth import SESSION_REFRESH_AFTER, SESSION_TTL, load_secret, sign_session

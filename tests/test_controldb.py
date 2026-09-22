@@ -194,3 +194,31 @@ class TestMigrations:
         assert loop.settings()["enabled"] is True
         loop.set_state(mode="heat")
         assert web.state()["mode"] == "heat"
+
+
+class TestPushSubscriptions:
+    def sub(self, ep: str) -> dict:
+        return {"endpoint": ep, "keys": {"p256dh": "pub-" + ep, "auth": "auth-" + ep}}
+
+    def test_add_list_remove(self, tmp_path: Path):
+        cs = ControlStore(tmp_path / "c.sqlite")
+        assert cs.list_subscriptions() == []
+        cs.add_subscription(self.sub("https://push/a"), user="d")
+        cs.add_subscription(self.sub("https://push/b"))
+        subs = cs.list_subscriptions()
+        assert {s["endpoint"] for s in subs} == {"https://push/a", "https://push/b"}
+        assert subs[0]["keys"].keys() == {"p256dh", "auth"}   # shape pywebpush wants
+        cs.remove_subscription("https://push/a")
+        assert [s["endpoint"] for s in cs.list_subscriptions()] == ["https://push/b"]
+
+    def test_resubscribe_replaces(self, tmp_path: Path):
+        cs = ControlStore(tmp_path / "c.sqlite")
+        cs.add_subscription(self.sub("https://push/a"))
+        cs.add_subscription({"endpoint": "https://push/a", "keys": {"p256dh": "new", "auth": "new"}})
+        subs = cs.list_subscriptions()
+        assert len(subs) == 1 and subs[0]["keys"]["p256dh"] == "new"
+
+    def test_malformed_is_rejected(self, tmp_path: Path):
+        cs = ControlStore(tmp_path / "c.sqlite")
+        with pytest.raises(ValueError):
+            cs.add_subscription({"endpoint": "https://push/a", "keys": {}})

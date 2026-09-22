@@ -292,6 +292,15 @@ class ControlLoop:
                 self.control.prune_log()
             await asyncio.sleep(self.settings.control_interval)
 
+    async def _notify(self, title: str, body: str, tag: str) -> None:
+        """Best-effort home-screen push. Runs off the event loop and never raises:
+        a push problem must not disturb the controller."""
+        try:
+            from . import push
+            await asyncio.to_thread(push.send, self.control, self.settings, title=title, body=body, tag=tag)
+        except Exception:  # noqa: BLE001
+            log.exception("push notification failed")
+
     async def tick(self) -> None:
         now = time.time()
         self.control.heartbeat(self.applier.dry_run)
@@ -333,12 +342,14 @@ class ControlLoop:
                     self.control.trip_override(reason)
                     self.control.log("override", f"manual change detected, controller switched off: {reason}")
                     self.control.set_state(mode=None, mode_since=None, rule=None)
+                    await self._notify("Controller switched off", f"Manual change detected: {reason}", "override")
                     return
                 elif attempts >= MAX_WRITE_ATTEMPTS:
                     why = f"thermostat did not apply the controller's settings after {attempts} attempts ({reason})"
                     self.control.trip_override(why)
                     self.control.log("override", f"write never applied, controller switched off: {reason}")
                     self.control.set_state(mode=None, mode_since=None, rule=None)
+                    await self._notify("Controller switched off", f"Write never applied: {reason}", "override")
                     return
                 else:
                     retry = True
@@ -416,6 +427,9 @@ class ControlLoop:
                 fields["mode_since"] = now
                 self.control.log("mode", f"{'(dry run) ' if self.applier.dry_run else ''}mode → {mode}: {rule}")
             self.control.set_state(**fields)
+            # Notify on a genuine heat<->cool switch, not the controller's first write.
+            if mode_changed and expected is not None and expected["mode"] != mode:
+                await self._notify("Mode changed", f"Now {'cooling' if mode == 'cool' else 'heating'}: {rule}", "mode")
 
         temps = ", ".join(f"{ev.name} {ev.rt:g}" if ev.rt is not None else f"{ev.name} ?" for ev in evals)
         temps += " | want " + ", ".join(f"{ev.d:g} ({ev.lo:g}–{ev.hi:g})" for ev in evals)

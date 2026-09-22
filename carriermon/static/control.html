@@ -104,6 +104,8 @@
   th { font-weight:600; color:var(--muted); font-size:.85rem; }
   td.num { text-align:right; }
   .hot { color:var(--heat); } .cold { color:var(--cool); }
+  #alertmsg { color:var(--muted); font-size:.85rem; margin-top:.4rem; }
+  #alertmsg:empty { display:none; }
   #status { color:var(--muted); font-size:.85rem; margin-left:auto; }
   #whoami { display:flex; align-items:center; gap:.4rem; font-size:.85rem; color:var(--muted); }
   #whoami button { padding:.15rem .5rem; font-size:.8rem; }
@@ -135,6 +137,12 @@
 
   <div class="card">
     <button id="power">…</button>
+  </div>
+
+  <div class="card" id="alertcard" hidden>
+    <h2>Alerts</h2>
+    <button id="alerts">🔔 Enable alerts on this device</button>
+    <div id="alertmsg"></div>
   </div>
 
   <div class="card">
@@ -413,7 +421,59 @@ async function post(body) {
 
 $('#power').onclick = () => post({enabled: !data.settings.enabled});
 
+// -- push notifications ----------------------------------------------------
+// iOS delivers Web Push only to a page added to the home screen (16.4+); in a normal
+// browser tab PushManager is usually absent, so the card just stays hidden.
+const b64ToBytes = s => {
+  const pad = '='.repeat((4 - s.length % 4) % 4);
+  const raw = atob((s + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+};
+async function jpost(url, body) {
+  return fetch(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body || {})});
+}
+async function setupPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return;
+  let cfg;
+  try { const r = await fetch('/api/push/config'); if (!r.ok) return; cfg = await r.json(); } catch (_) { return; }
+  if (!cfg.enabled || !cfg.vapid_public_key) return;   // server has no VAPID keys configured
+  const card = $('#alertcard'), btn = $('#alerts'), msg = $('#alertmsg');
+  card.hidden = false;
+  const reg = await navigator.serviceWorker.ready;
+  async function refresh() {
+    const sub = await reg.pushManager.getSubscription();
+    const on = !!sub && Notification.permission === 'granted';
+    btn.textContent = on ? '🔔 Alerts on — tap to turn off' : '🔔 Enable alerts on this device';
+    btn.disabled = Notification.permission === 'denied';
+    if (Notification.permission === 'denied') msg.textContent = 'Notifications are blocked. Enable them for this app in iPhone Settings.';
+    return sub;
+  }
+  await refresh();
+  btn.onclick = async () => {
+    btn.disabled = true; msg.textContent = '';
+    try {
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        await jpost('/api/push/unsubscribe', {endpoint: existing.endpoint});
+        await existing.unsubscribe();
+        msg.textContent = 'Alerts turned off on this device.';
+      } else {
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') { msg.textContent = 'Permission was not granted.'; }
+        else {
+          const sub = await reg.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: b64ToBytes(cfg.vapid_public_key)});
+          await jpost('/api/push/subscribe', sub);
+          await jpost('/api/push/test');
+          msg.textContent = 'Alerts on. A test notification is on its way.';
+        }
+      }
+    } catch (e) { msg.textContent = 'Could not change alerts: ' + e; }
+    await refresh();
+  };
+}
+
 load();
+setupPush();
 setInterval(load, 30000);
 </script>
 </body>

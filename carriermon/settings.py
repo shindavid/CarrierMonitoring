@@ -38,6 +38,9 @@ class Settings:
     home_networks: tuple[str, ...]   # CIDRs/IPs that count as "home" besides our own public IP
     public_ip_url: str | None        # where to learn our public IPv4 (None = don't)
     public_ip6_url: str | None       # ... and IPv6
+    vapid_public_key: str | None     # Web Push (home-screen app notifications); see `carriermon vapid-keys`
+    vapid_private_key: str | None
+    vapid_subject: str               # contact URI in the VAPID claim (mailto:/https:)
 
     def require_carrier_login(self) -> None:
         if not self.username or not self.password:
@@ -63,4 +66,7 @@ class Settings:
             home_networks=tuple(n.strip() for n in os.environ.get("CARRIERMON_HOME_NETWORKS", "").split(",") if n.strip()),
             public_ip_url=os.environ.get("CARRIERMON_PUBLIC_IP_URL", "https://1.1.1.1/cdn-cgi/trace") or None,
             public_ip6_url=os.environ.get("CARRIERMON_PUBLIC_IP6_URL", "https://[2606:4700:4700::1111]/cdn-cgi/trace") or None,
+            vapid_public_key=os.environ.get("CARRIERMON_VAPID_PUBLIC_KEY") or None,
+            vapid_private_key=os.environ.get("CARRIERMON_VAPID_PRIVATE_KEY") or None,
+            vapid_subject=os.environ.get("CARRIERMON_VAPID_SUBJECT", "mailto:admin@localhost"),
         )

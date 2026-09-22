@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from . import push
 from .auth import (SESSION_TTL, HomeDetector, client_ip, load_secret, session_needs_refresh, sign_session,
                    verify_session)
 from .controldb import ControlStore
@@ -46,6 +47,15 @@ class ZoneEdit(BaseModel):
 class ControlEdit(BaseModel):
     enabled: bool | None = None
     zones: dict[str, ZoneEdit] | None = None   # entity -> partial edit
+
+
+class PushSub(BaseModel):
+    endpoint: str
+    keys: dict   # {p256dh, auth}
+
+
+class PushUnsub(BaseModel):
+    endpoint: str
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -264,6 +274,31 @@ def create_app(settings: Settings) -> FastAPI:
                 if before[st] != after[st]:
                     control.log("target", f"{names[entity]} {period} starts {before[st]} → {after[st]}", user=who)
         return {**control_payload(), "me": me}
+
+    # -- push notifications (home-screen app) ------------------------------------
+    @app.get("/api/push/config")
+    def push_config() -> dict:
+        """Whether push is set up on the server, and the key the browser needs to subscribe."""
+        return {"enabled": push.configured(settings), "vapid_public_key": settings.vapid_public_key}
+
+    @app.post("/api/push/subscribe")
+    def push_subscribe(sub: PushSub, request: Request) -> dict:
+        try:
+            control.add_subscription(sub.model_dump(), user=request.state.user)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"ok": True}
+
+    @app.post("/api/push/unsubscribe")
+    def push_unsubscribe(body: PushUnsub) -> dict:
+        control.remove_subscription(body.endpoint)
+        return {"ok": True}
+
+    @app.post("/api/push/test")
+    def push_test() -> dict:
+        sent = push.send(control, settings, title="Carrier Control",
+                         body="Test alert — notifications are working.", tag="carrier-test")
+        return {"sent": sent}
 
     @app.get("/api/systems")
     def systems() -> list[dict]:

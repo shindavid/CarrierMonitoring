@@ -8,6 +8,7 @@ dependencies = [
     "carrier_api",
     "fastapi",
     "uvicorn[standard]",
+    "pywebpush",   # Web Push notifications for the home-screen app
 ]
 
 [project.optional-dependencies]

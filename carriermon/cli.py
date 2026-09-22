@@ -31,6 +31,8 @@ def main(argv: list[str] | None = None) -> None:
     pw = usub.add_parser("passwd", help="change a login's password")
     pw.add_argument("name")
     pw.add_argument("--password", help="prompted if omitted")
+    sub.add_parser("vapid-keys", help="generate a VAPID key pair for home-screen push notifications "
+                                      "(prints the .env lines to add)")
     web = sub.add_parser("web", help="serve the dashboard")
     web.add_argument("--host", default=None, help="override CARRIERMON_HOST")
     web.add_argument("--port", type=int, default=None, help="override CARRIERMON_PORT")
@@ -82,6 +84,14 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(f"no such user: {exc.args[0]}")
         except ValueError as exc:
             raise SystemExit(str(exc))
+    elif args.cmd == "vapid-keys":
+        from .push import generate_keys
+        public, private = generate_keys()
+        print("# Web Push (VAPID) keys for home-screen notifications — add to .env.")
+        print("# The private key is a secret; keep it out of version control.")
+        print(f"CARRIERMON_VAPID_PUBLIC_KEY={public}")
+        print(f"CARRIERMON_VAPID_PRIVATE_KEY={private}")
+        print("CARRIERMON_VAPID_SUBJECT=mailto:you@example.com")
     elif args.cmd == "control":
         from .control import run_standalone
         asyncio.run(run_standalone(settings))
