@@ -90,6 +90,7 @@ const SERIES = {
   damper:    {name:'Damper',      color:'#a05adc', width:2},
   oat:       {name:'Outdoor temp', color:'rgba(107,142,35,.55)', width:5},
   airflow:   {name:'Airflow',      color:'#0ea5a5', width:2},
+  statpress: {name:'Static pressure', color:'#c2410c', width:1.5, dash:[5,3], scale:'y2'},   // right axis (opts.y2)
 };
 const BANDS = {
   zoneconditioning: [['active_heat','Heat','rgba(230,60,30,.32)'], ['prep_heat','Pre-heat','rgba(245,190,40,.35)'],
@@ -245,12 +246,21 @@ function chart(parent, title, seriesMap, bands, opts) {
     width: Math.max(260, card.clientWidth - 14), height,
     legend: {show:false},
     padding: [6, 8, opts.ribbon ? RIBBON_PAD : 0, 0],
-    series: [{}, ...names.map(n => ({stroke:SERIES[n].color, width:SERIES[n].width, dash:SERIES[n].dash,
+    series: [{}, ...names.map(n => ({stroke:SERIES[n].color, width:SERIES[n].width, dash:SERIES[n].dash, scale:SERIES[n].scale || 'y',
                                      paths:uPlot.paths.stepped({align:1}), points:{show:false}, spanGaps:true}))],
+    // With a second (right) axis, each axis takes the color of its curve so the key reads unambiguously.
     axes: [{incrs:INCRS, space:70, values:tickLabels, ticks:{show:false}, size:24, gap:4},
-           {label:opts.ylabel, labelSize:18, size:48, ticks:{show:false}, incrs:[1,2,5,10,20,25,50,100], values: opts.yrange ? clampedTicks(opts.yrange) : undefined}],
+           {label:opts.ylabel, labelSize:18, size:48, ticks:{show:false}, incrs:[1,2,5,10,20,25,50,100], values: opts.yrange ? clampedTicks(opts.yrange) : undefined,
+            stroke: opts.y2 ? SERIES[names.find(n => (SERIES[n].scale || 'y') === 'y')].color : undefined},
+           // The right scale is a fixed multiple (opts.y2.per) of the left one, so both share
+           // zero and every gridline: its ticks are the left axis's ticks, rescaled.
+           ...(opts.y2 ? [{scale:'y2', side:1, label:opts.y2.label, labelSize:18, size:48, ticks:{show:false}, grid:{show:false},
+                          splits: u => (u.axes[1]._splits || []).map(v => v * opts.y2.per),
+                          values: (u, splits) => splits.map(v => +v.toFixed(3)),
+                          stroke: SERIES[names.find(n => SERIES[n].scale === 'y2')].color}] : [])],
     scales: {x:{time:true}, y: opts.yrange ? {range: opts.yrange}
-                                : opts.y0 ? {range: (u, _mn, mx) => [0, mx == null ? 100 : mx * 1.05]} : {}},
+                                : opts.y0 ? {range: (u, _mn, mx) => [0, mx == null ? 100 : mx * 1.05]} : {},
+             ...(opts.y2 ? {y2: {range: opts.yrange.map(v => v * opts.y2.per)}} : {})},
     cursor: {sync:{key:'cm'}, drag:{x:true, y:false}, y:false},
     hooks: {
       drawClear: [u => { drawBands(u, bands); drawMidnights(u); }],
@@ -323,8 +333,13 @@ function render() {
       {rt:clamp(z.numeric.rt), htsp:clamp(z.numeric.htsp), clsp:clamp(z.numeric.clsp), oat:clamp(d.system.numeric.oat)},
       [{kind:'zoneconditioning', ivals:intervals(z.state.zoneconditioning, end)}],
       {fill:true, ylabel:'Fahrenheit', yrange:TEMP, ribbon:modeIv});
-    chart(zonesEl, `${z.name} — damper & fan`, {damper:mapNum(z.numeric.damperposition, v => v/15*100)},
-      [{kind:'fan', ivals:intervals(z.state.fan, end)}], {fill:true, ylabel:'Open %', yrange:[-4,104]});
+    // Damper (left axis) with the system's duct static pressure overlaid on a right axis
+    // (100 % open lines up with 1.5 in. w.c.), to show whether closing dampers is what
+    // drives the pressure up.
+    chart(zonesEl, `${z.name} — damper, static & fan`,
+      {damper:mapNum(z.numeric.damperposition, v => v/15*100), statpress:(d.idu && d.idu.statpress) || []},
+      [{kind:'fan', ivals:intervals(z.state.fan, end)}],
+      {fill:true, ylabel:'Open %', yrange:[-4,104], y2:{label:'in. w.c.', per:1.5/100}});
   }
   // System-wide airflow (indoor blower CFM), shaded by whether the air is hot/cold/neutral.
   if (showAir)
