@@ -251,7 +251,8 @@ function chart(parent, title, seriesMap, bands, opts) {
     // With a second (right) axis, each axis takes the color of its curve so the key reads unambiguously.
     axes: [{incrs:INCRS, space:70, values:tickLabels, ticks:{show:false}, size:24, gap:4},
            {label:opts.ylabel, labelSize:18, size:48, ticks:{show:false}, incrs:[1,2,5,10,20,25,50,100], values: opts.yrange ? clampedTicks(opts.yrange) : undefined,
-            stroke: opts.y2 ? SERIES[names.find(n => (SERIES[n].scale || 'y') === 'y')].color : undefined},
+            // Omit the key entirely otherwise: an explicit undefined replaces uPlot's default stroke.
+            ...(opts.y2 ? {stroke: SERIES[names.find(n => (SERIES[n].scale || 'y') === 'y')].color} : {})},
            // The right scale is a fixed multiple (opts.y2.per) of the left one, so both share
            // zero and every gridline: its ticks are the left axis's ticks, rescaled.
            ...(opts.y2 ? [{scale:'y2', side:1, label:opts.y2.label, labelSize:18, size:48, ticks:{show:false}, grid:{show:false},
