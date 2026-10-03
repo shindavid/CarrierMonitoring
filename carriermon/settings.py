@@ -41,6 +41,8 @@ class Settings:
     vapid_public_key: str | None     # Web Push (home-screen app notifications); see `carriermon vapid-keys`
     vapid_private_key: str | None
     vapid_subject: str               # contact URI in the VAPID claim (mailto:/https:)
+    bus_host: str | None = None      # infinitesp bus tap (JSONL stream); None = no bus logging
+    bus_port: int = 2373
 
     def require_carrier_login(self) -> None:
         if not self.username or not self.password:
@@ -69,4 +71,6 @@ class Settings:
             vapid_public_key=os.environ.get("CARRIERMON_VAPID_PUBLIC_KEY") or None,
             vapid_private_key=os.environ.get("CARRIERMON_VAPID_PRIVATE_KEY") or None,
             vapid_subject=os.environ.get("CARRIERMON_VAPID_SUBJECT", "mailto:admin@localhost"),
+            bus_host=os.environ.get("CARRIERMON_BUS_HOST") or None,
+            bus_port=int(os.environ.get("CARRIERMON_BUS_PORT", "2373")),
         )

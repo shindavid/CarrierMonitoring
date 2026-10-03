@@ -77,10 +77,23 @@ Logins last indefinitely: the session cookie is issued for 400 days (the browser
 and renewed on every visit, so it only lapses after a year of not using the site, on
 log-out, or if `data/secret.key` (the cookie signing key) is replaced.
 
+### Bus tap (optional)
+With an [infinitesp](https://github.com/nebulous/infinitesp) ESP32 on the ABCD bus (flashed
+passive, `sam_address: 0`), set `CARRIERMON_BUS_HOST` to its host and `ingest` also reads its
+bus capture stream (port 2373) and records the zone sensor temperatures the thermostat polls,
+source `bus:tap`:
+- `bus.zone:N` — a Remote Room Sensor wired to the zone board's ZS*N* terminals.
+- `bus.sensor:XX` — a Smart Sensor at bus address 0xXX (which zone it serves isn't decoded).
+
+These are the sensors' own readings, before the thermostat's zone offsets, so they can
+differ from the cloud's `zone:N` `rt` by that offset. The connection retries forever, so the
+tap being down never affects cloud logging.
+
 ### What gets stored (`data/carriermon.sqlite`)
 - `raw_messages` — every payload from Carrier, verbatim.
 - `readings` — every field of status + config, flattened, written when it **changes**
-  (plus a full anchor row on each poll). `changed=1` rows are the change log.
+  (plus a full anchor row on each poll). `changed=1` rows are the change log. Bus-tap
+  readings land here too, change-tracked the same way.
 
 ### API
 - `GET /api/systems`, `/api/fields`

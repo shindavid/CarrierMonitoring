@@ -104,6 +104,7 @@ class CloudIngest:
         self.api = ApiConnection(self.settings.username, self.settings.password)
         ws = None
         control_task: asyncio.Task | None = None
+        bus_task: asyncio.Task | None = None
         try:
             await self.full_load("cloud:load")
             self.updater = WebsocketDataUpdater(systems=self.systems)
@@ -121,6 +122,16 @@ class CloudIngest:
             control_task = asyncio.create_task(
                 ControlLoop(self.settings, self.store, ControlStore(self.settings.control_db_path), applier).run()
             )
+            # Zone sensor readings straight off the ABCD bus, filed under the (one)
+            # cloud system's serial so they sit beside its cloud readings.
+            if self.settings.bus_host:
+                from .bus import BusIngest
+                if len(self.systems) != 1:
+                    log.warning("bus: %d systems on this account; filing bus readings under the first",
+                                len(self.systems))
+                bus_task = asyncio.create_task(
+                    BusIngest(self.settings, self.store, self.systems[0].profile.serial).run()
+                )
             last_prune = 0.0
             while True:
                 await asyncio.sleep(self.settings.poll_seconds)
@@ -141,8 +152,9 @@ class CloudIngest:
                     except Exception:  # noqa: BLE001
                         log.exception("retention prune failed; will retry tomorrow")
         finally:
-            if control_task is not None:
-                control_task.cancel()
+            for task in (control_task, bus_task):
+                if task is not None:
+                    task.cancel()
             if ws is not None:
                 ws.running = False
                 for task in (ws.task_listener, ws.task_heartbeat):
