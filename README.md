@@ -85,6 +85,10 @@ source `bus:tap`:
 - `bus.zone:N` — a Remote Room Sensor wired to the zone board's ZS*N* terminals.
 - `bus.sensor:XX` — a Smart Sensor at bus address 0xXX (which zone it serves isn't decoded).
 
+`.venv/bin/carriermon bus` prints the latest bus reading per sensor beside the cloud's zone
+temperature (`--minutes N` also lists every change in that window). It only reads the
+database, so it is safe from a dev checkout.
+
 These are the sensors' own readings, before the thermostat's zone offsets, so they can
 differ from the cloud's `zone:N` `rt` by that offset. The connection retries forever, so the
 tap being down never affects cloud logging.

@@ -12,8 +12,8 @@ For now we keep only the zone temperature readings the thermostat polls:
 
 These are the sensor values *before* the thermostat applies its zone offsets, so
 they can differ from the cloud's zone ``rt`` by that offset. Smart Sensors are
-stored by bus address (``bus.sensor:22``): which zone each one serves isn't in the
-frames we decode, so we don't guess.
+stored by bus address (``bus.sensor:22``); a Smart Sensor's address is 0x20 plus the
+zone address set on the sensor itself, so 0x22 serves zone 2.
 """
 
 from __future__ import annotations
@@ -106,3 +106,57 @@ class BusIngest:
                 log.warning("bus: %s; reconnecting in %ss", exc or type(exc).__name__, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
+
+
+def zone_of(entity: str) -> int | None:
+    """Zone number a bus entity reports for (``bus.zone:3`` -> 3, ``bus.sensor:23`` -> 3)."""
+    kind, _, ident = entity.partition(":")
+    try:
+        if kind == "bus.zone":
+            return int(ident)
+        if kind == "bus.sensor":
+            return int(ident, 16) - 0x20
+    except ValueError:
+        pass
+    return None
+
+
+def report(store: Store, minutes: float | None = None, now: float | None = None,
+           zone_names: dict[int, str] | None = None) -> str:
+    """The latest bus reading per sensor beside the cloud's zone temperature; with
+    ``minutes``, also every change in that window. ``zone_names`` (from
+    CARRIERMON_ZONE_NAMES) win over the names the cloud reports."""
+    now = now or time.time()
+    lines = []
+    for serial in store.serials():
+        names = {z["entity"]: z["name"] for z in store.zones(serial)}
+        names.update({f"zone:{zone}": name for zone, name in (zone_names or {}).items()})
+        entities = [r[0] for r in store.conn.execute(
+            "SELECT DISTINCT entity FROM readings WHERE serial=? AND source=? AND field='rt'", (serial, SOURCE))]
+        entities.sort(key=lambda e: (zone_of(e) or 99, e))
+        lines.append(f"{'zone':<5}{'name':<14}{'sensor':<15}{'bus':>8}{'age':>7}{'cloud':>7}")
+        for entity in entities:
+            zone = zone_of(entity)
+            ts, value = store.conn.execute(
+                "SELECT ts, value_num FROM readings WHERE serial=? AND entity=? AND field='rt' "
+                "ORDER BY ts DESC LIMIT 1", (serial, entity)).fetchone()
+            cloud = store.latest(serial, f"zone:{zone}", "rt") if zone else None
+            lines.append(f"{zone or '?':<5}{names.get(f'zone:{zone}', ''):<14}{entity:<15}{value:>8.2f}"
+                         f"{_age(max(0.0, now - ts)):>7}{'' if cloud is None else f'{cloud:g}':>7}")
+        if minutes:
+            for entity in entities:
+                changes = store.conn.execute(
+                    "SELECT ts, value_num FROM readings WHERE serial=? AND entity=? AND field='rt' "
+                    "AND changed=1 AND ts>=? ORDER BY ts", (serial, entity, now - minutes * 60)).fetchall()
+                lines.append(f"\n{entity} ({names.get(f'zone:{zone_of(entity)}', '?')}), "
+                             f"{len(changes)} change(s) in the last {minutes:g} min:")
+                lines.extend(f"  {time.strftime('%m-%d %H:%M:%S', time.localtime(t))}  {v:.2f}" for t, v in changes)
+    return "\n".join(lines) if lines else "no bus readings stored (is CARRIERMON_BUS_HOST set for ingest?)"
+
+
+def _age(seconds: float) -> str:
+    if seconds < 120:
+        return f"{seconds:.0f}s"
+    if seconds < 7200:
+        return f"{seconds / 60:.0f}m"
+    return f"{seconds / 3600:.0f}h"

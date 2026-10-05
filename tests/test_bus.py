@@ -6,9 +6,13 @@ SYSTXZNSMS01 Smart Sensors."""
 from __future__ import annotations
 
 import json
+import time
 
-from carriermon.bus import BusIngest, decode
+import pytest
+
+from carriermon.bus import BusIngest, decode, report, zone_of
 from carriermon.db import Store
+from carriermon.settings import parse_zone_names
 
 ZC_0302 = {"src": "60", "dst": "20", "func": "06", "reg": "0302",
            "data": "010104A804020000040300000404000004140000041C0000"}
@@ -76,3 +80,35 @@ class TestBusIngest:
         store = Store(settings.db_path)
         BusIngest(settings, store, "SER").handle_line(line(ZC_0302))
         assert BusIngest(settings, store, "SER").handle_line(line(ZC_0302)) == 0
+
+
+class TestReport:
+    def test_zone_of(self):
+        assert zone_of("bus.zone:1") == 1 and zone_of("bus.sensor:23") == 3
+        assert zone_of("bus.sensor:zz") is None and zone_of("zone:1") is None
+
+    def test_latest_bus_value_beside_cloud(self, settings):
+        store = Store(settings.db_path)
+        bus = BusIngest(settings, store, "SER")
+        bus.handle_line(line(ZC_0302), now=1000.0)
+        bus.handle_line(line(SENSOR_22), now=1010.0)
+        store.add_readings([(1000.0, "SER", "zone:1", "rt", 74.0, None, 1, "cloud:poll"),
+                            (1000.0, "SER", "config.zone:1", "name", None, "2nd Floor", 1, "cloud:poll")])
+        out = report(store, minutes=1, now=1020.0).splitlines()
+        assert out[1].split() == ["1", "2nd", "Floor", "bus.zone:1", "74.50", "20s", "74"]
+        assert out[2].split() == ["2", "bus.sensor:22", "69.69", "10s"]      # no cloud zone:2 yet
+        assert "  " + time.strftime("%m-%d %H:%M:%S", time.localtime(1010.0)) + "  69.69" in out
+
+    def test_zone_names_from_env_win_over_cloud(self, settings):
+        store = Store(settings.db_path)
+        BusIngest(settings, store, "SER").handle_line(line(ZC_0302), now=1000.0)
+        store.add_readings([(1000.0, "SER", "config.zone:1", "name", None, "Upstairs", 1, "cloud:poll")])
+        assert "Upstairs" in report(store, now=1001.0)
+        assert "Attic" in report(store, now=1001.0, zone_names={1: "Attic"})
+
+
+def test_parse_zone_names():
+    assert parse_zone_names(" 1=2nd Floor, 4=Boys room ,") == {1: "2nd Floor", 4: "Boys room"}
+    assert parse_zone_names("") == {}
+    with pytest.raises(SystemExit):
+        parse_zone_names("upstairs")

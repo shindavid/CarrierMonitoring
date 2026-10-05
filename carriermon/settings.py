@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -43,6 +43,7 @@ class Settings:
     vapid_subject: str               # contact URI in the VAPID claim (mailto:/https:)
     bus_host: str | None = None      # infinitesp bus tap (JSONL stream); None = no bus logging
     bus_port: int = 2373
+    zone_names: dict[int, str] = field(default_factory=dict)   # zone number -> name (else the cloud's names)
 
     def require_carrier_login(self) -> None:
         if not self.username or not self.password:
@@ -73,4 +74,18 @@ class Settings:
             vapid_subject=os.environ.get("CARRIERMON_VAPID_SUBJECT", "mailto:admin@localhost"),
             bus_host=os.environ.get("CARRIERMON_BUS_HOST") or None,
             bus_port=int(os.environ.get("CARRIERMON_BUS_PORT", "2373")),
+            zone_names=parse_zone_names(os.environ.get("CARRIERMON_ZONE_NAMES", "")),
         )
+
+
+def parse_zone_names(text: str) -> dict[int, str]:
+    """``"1=2nd Floor, 2=1st Floor"`` -> ``{1: "2nd Floor", 2: "1st Floor"}``."""
+    names = {}
+    for item in text.split(","):
+        zone, sep, name = item.partition("=")
+        if not sep or not zone.strip().isdigit() or not name.strip():
+            if item.strip():
+                raise SystemExit(f"CARRIERMON_ZONE_NAMES: expected ZONE=NAME, got {item.strip()!r}")
+            continue
+        names[int(zone)] = name.strip()
+    return names

@@ -31,6 +31,8 @@ def main(argv: list[str] | None = None) -> None:
     pw = usub.add_parser("passwd", help="change a login's password")
     pw.add_argument("name")
     pw.add_argument("--password", help="prompted if omitted")
+    bus = sub.add_parser("bus", help="show the latest bus-tap sensor readings next to the cloud's (read-only)")
+    bus.add_argument("--minutes", type=float, default=None, help="also list every change in the last N minutes")
     sub.add_parser("vapid-keys", help="generate a VAPID key pair for home-screen push notifications "
                                       "(prints the .env lines to add)")
     web = sub.add_parser("web", help="serve the dashboard")
@@ -84,6 +86,10 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(f"no such user: {exc.args[0]}")
         except ValueError as exc:
             raise SystemExit(str(exc))
+    elif args.cmd == "bus":
+        from .bus import report
+        from .db import Store
+        print(report(Store(settings.db_path, read_only=True), args.minutes, zone_names=settings.zone_names))
     elif args.cmd == "vapid-keys":
         from .push import generate_keys
         public, private = generate_keys()
