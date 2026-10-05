@@ -76,6 +76,17 @@ class TestBusIngest:
         assert tuple(store.conn.execute(
             "SELECT value_num, changed FROM readings ORDER BY id DESC LIMIT 1").fetchone()) == (75.0, 1)
 
+    def test_reconnect_forgets_pre_outage_values(self, settings):
+        # An anchor right after an outage must not re-record the last pre-outage value.
+        store = Store(settings.db_path)
+        bus = BusIngest(settings, store, "SER")
+        t = bus.last_anchor
+        bus.handle_line(line(ZC_0302), now=t + 1)
+        bus.on_connect()
+        bus.handle_line(line(SENSOR_22), now=t + 2 * settings.poll_seconds)
+        rows = store.conn.execute("SELECT entity, changed FROM readings ORDER BY id").fetchall()
+        assert [tuple(r) for r in rows] == [("bus.zone:1", 1), ("bus.sensor:22", 1)]
+
     def test_resumes_change_tracking_from_stored_values(self, settings):
         store = Store(settings.db_path)
         BusIngest(settings, store, "SER").handle_line(line(ZC_0302))

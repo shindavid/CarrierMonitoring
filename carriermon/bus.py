@@ -86,13 +86,21 @@ class BusIngest:
         rows, _ = diff_rows(self.serial, values, self.last, SOURCE, force_all=force, ts=now)
         return self.store.add_readings(rows) if rows else 0
 
+    def on_connect(self) -> None:
+        """Forget the values from before a (re)connect: the gap may be an outage (the
+        HVAC powered off), and an anchor must not re-record them as current."""
+        self.current.clear()
+
     async def run(self) -> None:
         host, port = self.settings.bus_host, self.settings.bus_port
         backoff = 1
         while True:
+            connected = False
             try:
                 reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 10)
+                connected = True
                 log.info("bus: connected to %s:%s", host, port)
+                self.on_connect()
                 backoff = 1
                 try:
                     while True:
@@ -102,8 +110,11 @@ class BusIngest:
                         self.handle_line(line)
                 finally:
                     writer.close()
-            except (OSError, asyncio.TimeoutError) as exc:
-                log.warning("bus: %s; reconnecting in %ss", exc or type(exc).__name__, backoff)
+            except TimeoutError:   # before OSError: TimeoutError subclasses it
+                reason = f"no bus data for {STALL_SECONDS}s" if connected else "connect timed out"
+                log.warning("bus: %s; reconnecting in %ss", reason, backoff)
+            except OSError as exc:
+                log.warning("bus: %s; reconnecting in %ss", str(exc) or type(exc).__name__, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
 
