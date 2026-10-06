@@ -181,20 +181,43 @@ class Store:
         )
         return {r["value_num"] if r["value_num"] is not None else r["value_text"] for r in rows}
 
+    def _distinct(self, sql: str, args: tuple = (), after: str = "") -> list[str]:
+        """Distinct values (greater than ``after``) of an indexed column, one index seek per
+        value. ``sql`` selects MIN(col) with ``col > ?`` as its LAST parameter and only lower
+        bound — a second one (e.g. ``col >= prefix``) is what SQLite would seek on, re-walking
+        every row already passed. A plain SELECT DISTINCT reads the whole index (millions of
+        rows) to find a handful of values."""
+        out: list[str] = []
+        last = after
+        while (value := self.conn.execute(sql, (*args, last)).fetchone()[0]) is not None:
+            out.append(value)
+            last = value
+        return out
+
     def serials(self) -> list[str]:
-        return [r[0] for r in self.conn.execute("SELECT DISTINCT serial FROM readings")]
+        return self._distinct("SELECT MIN(serial) FROM readings WHERE serial > ?")
 
     def zones(self, serial: str) -> list[dict]:
         """Enabled zones with display names (names live in config, enabled flag in status)."""
-        latest = """
-            SELECT entity, value_text FROM readings
-            WHERE serial=? AND entity LIKE ? AND field=?
-              AND id IN (SELECT MAX(id) FROM readings WHERE serial=? AND entity LIKE ? AND field=? GROUP BY entity)
-        """
-        names = {e.replace("config.", ""): v for e, v in
-                 self.conn.execute(latest, (serial, "config.zone:%", "name", serial, "config.zone:%", "name"))}
-        enabled = {e: v for e, v in
-                   self.conn.execute(latest, (serial, "zone:%", "enabled", serial, "zone:%", "enabled"))}
+        # Not `entity LIKE 'zone:%'`: LIKE is case-insensitive, so SQLite cannot use the
+        # index for the prefix and scans every reading of the system (seconds per page load).
+        def latest(prefix: str, field: str) -> dict[str, str | None]:
+            entities = self._distinct(
+                "SELECT MIN(entity) FROM readings WHERE serial = ? AND entity < ? AND entity > ?",
+                (serial, prefix[:-1] + chr(ord(prefix[-1]) + 1)), after=prefix)
+            out = {}
+            for e in entities:
+                if not e[len(prefix):].isdigit():   # e.g. config.zone:1.day:0 (the weekly program)
+                    continue
+                row = self.conn.execute(
+                    "SELECT value_text FROM readings WHERE serial=? AND entity=? AND field=? "
+                    "ORDER BY ts DESC, id DESC LIMIT 1", (serial, e, field)).fetchone()
+                if row is not None:
+                    out[e] = row[0]
+            return out
+
+        names = {e.replace("config.", ""): v for e, v in latest("config.zone:", "name").items()}
+        enabled = latest("zone:", "enabled")
         zones = [e for e in set(names) | set(enabled) if enabled.get(e, "on") == "on"]
         zones.sort(key=lambda e: int(e.split(":")[1]) if e.split(":")[1].isdigit() else 0)
         return [{"entity": e, "name": names.get(e) or e} for e in zones]

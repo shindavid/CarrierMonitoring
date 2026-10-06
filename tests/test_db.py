@@ -42,6 +42,15 @@ class TestZones:
         store.add_readings([(T0 + 500, "S1", "config.zone:1", "name", None, "Loft", 1, "cloud:ws")])
         assert store.zones("S1")[0]["name"] == "Loft"
 
+    def test_ignores_other_systems_and_config_sub_entities(self, store: Store):
+        store.add_readings([
+            (T0, "S2", "zone:3", "enabled", None, "on", 1, "cloud:load"),
+            (T0, "S1", "config.zone:1.day:0", "name", None, "Mon", 1, "cloud:load"),
+            (T0, "S1", "zoneish", "enabled", None, "on", 1, "cloud:load"),
+        ])
+        assert [z["entity"] for z in store.zones("S1")] == ["zone:1", "zone:2"]
+        assert store.serials() == ["S1", "S2"]
+
 
 class TestSeriesAndEvents:
     def test_series_includes_prior_value_for_step_charts(self, store: Store):
