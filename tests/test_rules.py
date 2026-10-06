@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pytest
 
-from carriermon.control import MARGIN, PERSIST, Decision, ZoneEval, decide, lean, period_now
+from carriermon.control import FAR, MARGIN, PERSIST, Decision, ZoneEval, decide, lean, period_now
 
 
 def Z(name: str, rt: float | None, lo: float = 69, d: float = 70, hi: float = 71) -> ZoneEval:
@@ -23,8 +23,17 @@ class TestLean:
 
     def test_one_zone_exactly_at_desired_blocks_the_lean(self):
         # This is the hysteresis: the zone just brought to D reads D.
-        assert lean([Z("a", 70), Z("b", 72)]) is None
-        assert lean([Z("a", 70), Z("b", 68)]) is None
+        assert lean([Z("a", 70), Z("b", 71.5)]) is None
+        assert lean([Z("a", 70), Z("b", 68.5)]) is None
+
+    def test_rule3_zone_far_past_desired_leans_despite_a_zone_at_desired(self):
+        assert lean([Z("a", 70), Z("b", 70 + FAR)]) == "above"
+        assert lean([Z("a", 70), Z("b", 70 - FAR)]) == "below"
+        assert lean([Z("a", 70), Z("b", 70 - FAR + 0.5)]) is None
+
+    def test_rule3_needs_no_zone_on_the_other_side(self):
+        assert lean([Z("a", 70.5), Z("b", 68)]) is None
+        assert lean([Z("a", 69.5), Z("b", 72)]) is None
 
     def test_mixed_sides_is_no_lean(self):
         assert lean([Z("a", 69), Z("b", 71)]) is None
@@ -116,7 +125,13 @@ class TestTier2And3:
 
     def test_pending_lean_is_mentioned_in_the_rule_text(self):
         d = decide([Z("a", 71)], 74, "above", 180)
-        assert d.mode is None and "above its desired temp for 3 min" in d.rule
+        assert d.mode is None and "every zone above its desired temp, leaning above for 3 min" in d.rule
+
+    def test_rule3_lean_heats_after_persisting(self):
+        zones = [Z("a", 70, 66, 70, 74), Z("b", 68, 66, 70, 74)]
+        assert decide(zones, 74, "below", PERSIST - 1).mode is None
+        d = decide(zones, 74, "below", PERSIST)
+        assert d.mode == "heat" and "at or below its desired temp, b 2 below" in d.rule
 
     def test_no_zone_readings(self):
         d = decide([Z("a", None)], 74)

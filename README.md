@@ -49,7 +49,10 @@ Every minute, with C(Z) the zone temps and O the outdoor temp:
 2. all zones tolerable → every zone strictly above its D for 5 min → cool; every zone
    strictly below its D for 5 min → heat. (The zone just brought to D reads exactly D and
    blocks the opposite lean until the whole house drifts past D — that is the hysteresis.)
-3. otherwise keep the current mode
+3. all zones tolerable → every zone at or above its D and some zone at least 2 above it for
+   5 min → cool; every zone at or below its D and some zone at least 2 below it for 5 min →
+   heat. (The 5 min count while rule 2 or rule 3 holds.)
+4. otherwise keep the current mode
 
 Any change made at the thermostat or in the Carrier app to the mode, a setpoint or a
 hold **switches the controller off**; press ON on `/control` to re-arm it. A write that

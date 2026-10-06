@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS control_state (
     override_ts         REAL,
     dry_run             INTEGER,
     loop_alive_ts       REAL,     -- heartbeat; the UI warns when this goes stale
-    lean_side           TEXT,     -- 'above' | 'below' | NULL: every zone strictly past its desired temp
+    lean_side           TEXT,     -- 'above' | 'below' | NULL: rules 2/3 lean (see control.lean)
     lean_since          REAL      -- when that lean started
 );
 CREATE TABLE IF NOT EXISTS control_log (

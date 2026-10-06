@@ -17,7 +17,11 @@ temp, O = outdoor):
      5 minutes -> cool; every zone strictly below its D for 5 minutes -> heat. The
      zone just brought to D reads exactly D, which blocks the opposite lean until the
      whole house has drifted past D the other way — that is the hysteresis.
-  3. otherwise keep the current mode.
+  3. every zone tolerable: if every zone is at or above its D and some zone is at least
+     2 above it for 5 minutes -> cool; every zone at or below its D and some zone at
+     least 2 below it for 5 minutes -> heat. (Rules 2 and 3 together are the "lean";
+     the 5 minutes count while either one holds.)
+  4. otherwise keep the current mode.
 
 Manual overrides: the loop remembers exactly what it wrote (mode, per-zone
 setpoints, hold). If the live state does not match after a grace period, the
@@ -55,6 +59,7 @@ log = logging.getLogger(__name__)
 
 MARGIN = 1.0      # outdoor must be more than this beyond every zone temp to count as "outside"
 PERSIST = 5 * 60  # seconds a whole-house lean must hold before it changes the mode
+FAR = 2.0         # rule 3: a zone this far past its desired temp leans the house even if others sit at D
 DEFAULT_GAP = 2.0 # thermostat deadband if config doesn't say
 MAX_WRITE_ATTEMPTS = 3  # rewrites of one target the thermostat keeps ignoring before giving up
 
@@ -78,14 +83,25 @@ class ZoneEval:
 
 
 def lean(zones: list[ZoneEval]) -> str | None:
-    """'above' if every zone (with a reading) is strictly above its desired temp,
-    'below' if every zone is strictly below, else None."""
+    """'above' if every zone (with a reading) is strictly above its desired temp (rule 2),
+    or at or above it with some zone FAR or more above (rule 3); 'below' likewise; else None."""
     known = [z for z in zones if z.rt is not None]
-    if known and all(z.rt > z.d for z in known):
-        return "above"
-    if known and all(z.rt < z.d for z in known):
-        return "below"
+    if not known:
+        return None
+    for side, sign in (("above", 1), ("below", -1)):
+        past = [sign * (z.rt - z.d) for z in known]
+        if all(p >= 0 for p in past) and (all(p > 0 for p in past) or max(past) >= FAR):
+            return side
     return None
+
+
+def _lean_why(known: list[ZoneEval], side: str) -> str:
+    """Which of rules 2/3 the current lean comes from, for the rule text."""
+    sign = 1 if side == "above" else -1
+    if all(sign * (z.rt - z.d) > 0 for z in known):
+        return f"every zone {side} its desired temp"
+    far = max(known, key=lambda z: sign * (z.rt - z.d))
+    return f"every zone at or {side} its desired temp, {far.name} {abs(far.rt - far.d):g} {side}"
 
 
 def decide(zones: list[ZoneEval], oat: float | None, lean_side: str | None = None, lean_for: float = 0.0) -> Decision:
@@ -120,11 +136,11 @@ def decide(zones: list[ZoneEval], oat: float | None, lean_side: str | None = Non
     if too_cold:
         return Decision("heat", f"cold zone: {heat_why}", hot, cold)
     mins = int(lean_for / 60)
+    lean_s = f"; {_lean_why(known, lean_side)}, leaning {lean_side} for {mins} min" if lean_side else ""
     if lean_side == "above" and lean_for >= PERSIST:
-        return Decision("cool", f"all zones tolerable; every zone above its desired temp for {mins} min", hot, cold)
+        return Decision("cool", f"all zones tolerable{lean_s}", hot, cold)
     if lean_side == "below" and lean_for >= PERSIST:
-        return Decision("heat", f"all zones tolerable; every zone below its desired temp for {mins} min", hot, cold)
-    lean_s = f"; every zone {lean_side} its desired temp for {mins} min" if lean_side else ""
+        return Decision("heat", f"all zones tolerable{lean_s}", hot, cold)
     return Decision(None, f"all zones tolerable{lean_s} — keep mode", hot, cold)
 
 
@@ -366,7 +382,7 @@ class ControlLoop:
             period = period_now(r["day_start"], r["night_start"])
             periods[z["entity"]] = period
             evals.append(ZoneEval(z["name"], z["rt"], r[f"{period}_lo"], r[f"{period}_d"], r[f"{period}_hi"]))
-        # Rule 2 needs to know how long the house has leaned; remember when it started.
+        # Rules 2 and 3 need to know how long the house has leaned; remember when it started.
         side = lean(evals)
         if side != state["lean_side"] or not state["lean_since"]:
             lean_since = now if side else None

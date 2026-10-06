@@ -383,7 +383,7 @@ function render() {
   if (on && state.mode_since) modeEl.textContent += ` (since ${fmtT(state.mode_since)})`;
   $('#rule').textContent = on ? (state.rule || '–') : 'controller is off; the thermostat is on its own';
   $('#decision').textContent = ev.decision_rule ? `${ev.decision || 'no change'} — ${ev.decision_rule}` : '–';
-  $('#lean').textContent = ev.lean ? `every zone ${ev.lean} its desired temp for ${Math.floor((ev.lean_for || 0) / 60)} min (switches at 5)` : (ev.zones ? 'zones straddle their desired temps' : '–');
+  $('#lean').textContent = ev.lean ? `leaning ${ev.lean} its desired temps for ${Math.floor((ev.lean_for || 0) / 60)} min (switches at 5)` : (ev.zones ? 'zones straddle their desired temps' : '–');
   $('#thermo').textContent = ev.thermostat_mode ? `mode ${ev.thermostat_mode}` : '–';
   $('#oat').textContent = ev.oat != null ? `${ev.oat} °F` : '–';
   $('#lasteval').textContent = state.last_eval_ts ? `${ago(state.last_eval_ts)}${ev.mismatch ? ' — mismatch: ' + ev.mismatch : ''}` : 'never';
