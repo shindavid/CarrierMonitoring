@@ -58,6 +58,11 @@ class TestSeriesAndEvents:
         assert [r["value_num"] for r in rows] == [71.0, 71.0, 72.0]
         assert rows[0]["ts"] == T0 + 60  # last value before the window
 
+    def test_series_changes_only_drops_repeats(self, store: Store):
+        rows = store.series("S1", "zone:1", "rt", T0 + 100, T0 + 200, changes_only=True)
+        assert [r["value_num"] for r in rows] == [71.0, 72.0]
+        assert rows[0]["ts"] == T0 + 60
+
     def test_series_without_prior(self, store: Store):
         rows = store.series("S1", "zone:1", "rt", T0 - 10, T0 + 10)
         assert [r["value_num"] for r in rows] == [70.0]

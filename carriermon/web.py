@@ -328,20 +328,26 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(404, "unknown serial")
         s, e = _range(start, end)
         zones = store.zones(serial)
+
+        def series(entity: str, f: str) -> list[dict]:
+            # Changes only: the charts are step lines, and repeated poll anchors made the
+            # response ~25x larger (5 MB for a day, 35 MB for a week).
+            return store.series(serial, entity, f, s, e, changes_only=True)
+
         out: dict = {"serial": serial, "start": s, "end": e, "zones": [], "system": {}, "idu": {}, "odu": {}}
         for z in zones:
             entity = z["entity"]
             out["zones"].append({
                 "entity": entity, "name": z["name"],
-                "numeric": {f: store.series(serial, entity, f, s, e) for f in ZONE_NUMERIC},
-                "state": {f: store.series(serial, entity, f, s, e) for f in ZONE_STATE},
+                "numeric": {f: series(entity, f) for f in ZONE_NUMERIC},
+                "state": {f: series(entity, f) for f in ZONE_STATE},
             })
         out["system"] = {
-            "numeric": {f: store.series(serial, "system", f, s, e) for f in SYSTEM_NUMERIC},
-            "state": {f: store.series(serial, "system", f, s, e) for f in SYSTEM_STATE},
+            "numeric": {f: series("system", f) for f in SYSTEM_NUMERIC},
+            "state": {f: series("system", f) for f in SYSTEM_STATE},
         }
         for unit in ("idu", "odu"):
-            out[unit] = {f: store.series(serial, unit, f, s, e) for f in UNIT_FIELDS}
+            out[unit] = {f: series(unit, f) for f in UNIT_FIELDS}
         out["events"] = store.events(serial, s, e, 500)
         return out
 

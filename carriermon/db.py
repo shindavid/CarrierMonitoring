@@ -134,7 +134,11 @@ class Store:
         )
         return [dict(r) for r in rows]
 
-    def series(self, serial: str, entity: str, field: str, start: float, end: float) -> list[dict]:
+    def series(self, serial: str, entity: str, field: str, start: float, end: float,
+               changes_only: bool = False) -> list[dict]:
+        """Rows of one field in [start, end], led by the last value before ``start``.
+        ``changes_only`` drops rows that repeat the previous value — the poll anchors
+        (one a minute per field, ~95% of rows), which add nothing to a step chart."""
         # Include the last value before `start` so step charts have a starting level.
         prior = self.conn.execute(
             "SELECT ts, value_num, value_text FROM readings WHERE serial=? AND entity=? AND field=? AND ts<? "
@@ -147,7 +151,10 @@ class Store:
             (serial, entity, field, start, end),
         ).fetchall()
         out = [dict(prior)] if prior else []
-        out.extend(dict(r) for r in rows)
+        for r in rows:
+            if changes_only and out and (r["value_num"], r["value_text"]) == (out[-1]["value_num"], out[-1]["value_text"]):
+                continue
+            out.append(dict(r))
         return out
 
     def events(self, serial: str | None, start: float, end: float, limit: int = 2000) -> list[dict]:
